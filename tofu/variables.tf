@@ -1,7 +1,13 @@
-variable "proxmox_endpoint" {
+variable "proxmox_nuc_endpoint" {
   description = "Proxmox API URL (e.g., https://192.168.4.100:8006)"
   type        = string
 }
+
+#variable "proxmox_miniforum_endpoint" {
+#  description = "Proxmox API URL (e.g., https://192.168.2.100:8006)"
+#  type        = string
+#}
+
 
 variable "proxmox_user" {
   description = "Proxmox user (e.g., root@pam)"

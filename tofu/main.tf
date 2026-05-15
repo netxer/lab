@@ -2,7 +2,7 @@ terraform {
   required_providers {
     proxmox = {
       source = "bpg/proxmox"
-      version = "0.85.0"
+      version = "0.106.0"
     }
     unifi = {
       source = "filipowm/unifi"
@@ -12,7 +12,7 @@ terraform {
 }
 
 provider "proxmox" {
-  endpoint = var.proxmox_endpoint
+  endpoint = var.proxmox_nuc_endpoint
   username = var.proxmox_user
   password = var.proxmox_password
   insecure = var.proxmox_tls_insecure
@@ -20,13 +20,15 @@ provider "proxmox" {
 
   ssh {
     #TODO: figure out how to fix the ssh agent issue / Works on windows need to check why on macos it has issues with 1pass agent
-    agent = true
+    agent = false
+    username = "root"
+    private_key = file("~/.ssh/Michelle SSH Key")
   }
 }
 
-#####################
+###############
 # Local image #
-#####################
+###############
 data "proxmox_virtual_environment_file" "imported_file" {
   node_name    = "nucpve"
   datastore_id = "local"
@@ -34,16 +36,16 @@ data "proxmox_virtual_environment_file" "imported_file" {
   file_name    = "temp.qcow2"
 }
 
-#####################
+######################
 # SSH key generation #
-#####################
+######################
 resource "tls_private_key" "vm_key" {
   algorithm = "RSA"
   rsa_bits  = 2048
 }
-#####################
+#######################
 # Output IP addresses #
-#####################
+#######################
 
 output "ansible_controller_vm_ips" {
   description = "IP addresses of ansible controller VMs"
@@ -69,9 +71,9 @@ output "worker_vm_ips" {
   }
 }
 
-#####################
+######################
 # Output private key #
-#####################
+######################
 
 output "vm_private_key" {
   value     = tls_private_key.vm_key.private_key_pem
@@ -86,12 +88,12 @@ output "vm_public_key" {
   value = tls_private_key.vm_key.public_key_openssh
 }
 
-#####################
+######################
 # Output private key #
-#####################
+######################
 
 resource "local_file" "vm_private_key" {
-  filename        = "${path.module}/../Ansible/ansible_key.pem"
+  filename        = "${path.module}/../ansible/ansible_key.pem"
   content         = tls_private_key.vm_key.private_key_pem
   file_permission = "0600"
 }
@@ -101,7 +103,7 @@ resource "local_file" "vm_private_key" {
 #####################
 
 resource "local_file" "ansible_inventory" {
-  filename = "${path.module}/../Ansible/inv/ansible_inventory.ini"
+  filename = "${path.module}/../ansible/inv/ansible_inventory.ini"
   content  = <<-EOT
 [control]
 %{for vm in proxmox_virtual_environment_vm.control_vm~}
@@ -118,12 +120,12 @@ ansible_ssh_common_args='-o StrictHostKeyChecking=no'
   EOT
 }
 
-#####################
+####################
 # Ansible playbook #
-#####################
+####################
 
 resource "local_file" "ansible_playbook" {
-  filename = "${path.module}/../Ansible/test-connectivity.yml"
+  filename = "${path.module}/../ansible/test-connectivity.yml"
   content  = <<-EOT
 ---
 - name: Test connectivity to all hosts
@@ -158,9 +160,9 @@ resource "local_file" "ansible_playbook" {
   EOT
 }
 
-#####################
+########################################
 # Transfer files to ansible controller #
-#####################
+########################################
 
 resource "null_resource" "transfer_ansible_files" {
   depends_on = [
@@ -170,6 +172,16 @@ resource "null_resource" "transfer_ansible_files" {
     local_file.vm_private_key
   ]
 
+  # Wait for cloud-init to finish first
+  provisioner "remote-exec" {
+    inline = ["cloud-init status --wait"]
+    connection {
+      host        = proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0]
+      user        = "ubuntu"
+      private_key = tls_private_key.vm_key.private_key_pem
+    }
+  }
+  
   provisioner "local-exec" {
     command = <<-EOT
       scp -i ${local_file.vm_private_key.filename} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${local_file.ansible_inventory.filename} ubuntu@${proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0]}:/home/ubuntu/ansible_inventory.ini

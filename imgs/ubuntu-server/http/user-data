@@ -1,0 +1,47 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  timezone: Asia/Jerusalem
+  keyboard:
+    layout: us
+  apt:
+    proxy: http://192.168.2.235:3142/
+    mirror-selection:
+      primary:
+        - uri: http://il.archive.ubuntu.com/ubuntu
+        - uri: http://archive.ubuntu.com/ubuntu
+  identity:
+    hostname: packer-build
+    username: ubuntu
+    password: "$6$SuEi126lbqAZXXpp$Cyzqc2QdySaPXcew3FkB5jnR6bsqpPzeXemlwONKMLgWaJriiZaqdsU/gTGNWoW6M3tgJDee0/xEpfbyy1J1I/"
+  ssh:
+    install-server: true
+    allow-pw: true
+  packages:
+    - qemu-guest-agent
+    - curl
+    - linux-generic
+    - python3-pip
+    - python3-venv
+    - pipx
+    - git
+    - btop
+    - htop
+    - jq
+    - net-tools
+    - dnsutils
+    - iotop
+    - unzip
+    - nfs-common
+    - tree
+  package_update: true
+  package_upgrade: true
+  late-commands:
+    - "echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/ubuntu"
+    # Disable swap
+    - curtin in-target -- swapoff -a
+    - curtin in-target -- sed -i '/ swap / s/^/#/' /etc/fstab
+    # Clean machine-id so cloned VMs get unique IDs
+    - curtin in-target -- truncate -s 0 /etc/machine-id
+    - curtin in-target -- rm -f /var/lib/dbus/machine-id
