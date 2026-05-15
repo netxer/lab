@@ -64,3 +64,4 @@ ansible_key*
 .DS_Store
 *.swp
 *.swo
+*.iso
