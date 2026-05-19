@@ -2,7 +2,7 @@
 # Cloud config ansible controller #
 #####################
 resource "proxmox_virtual_environment_file" "ansible_controller_cloud_config" {
-  count        = 3
+  count        = 1
   content_type = "snippets"
   datastore_id = "local"
   node_name    = "nucpve"
@@ -40,7 +40,6 @@ resource "proxmox_virtual_environment_file" "ansible_controller_cloud_config" {
       - sleep ${count.index * 60}
       - apt-get update -y
       - apt-get upgrade -y
-      - apt-get install -y curl linux-generic python3-pip python3-venv pipx git
       - su - ubuntu -c "pipx install --include-deps ansible"
       - su - ubuntu -c "pipx ensurepath"
       - su - ubuntu -c "/home/ubuntu/.local/bin/ansible-galaxy collection install community.general"
@@ -85,13 +84,6 @@ resource "proxmox_virtual_environment_file" "control_vm_cloud_config" {
           Acquire::https::Timeout "60";
         permissions: '0644'
     runcmd:
-      - sleep ${count.index * 60 + 180}
-      - apt-get update -y
-      - apt-get upgrade -y
-      - apt-get install -y curl linux-generic pipx
-      - su - ubuntu -c "pipx install --include-deps ansible"
-      - su - ubuntu -c "pipx ensurepath"
-      - su - ubuntu -c "/home/ubuntu/.local/bin/ansible-galaxy collection install community.general"
       - echo "done" > /tmp/cloud-config.done
     EOF
 
@@ -134,10 +126,6 @@ resource "proxmox_virtual_environment_file" "node_vm_cloud_config" {
           Acquire::https::Timeout "60";
         permissions: '0644'
     runcmd:
-      - sleep ${count.index * 60 + 360}
-      - apt-get update -y
-      - apt-get upgrade -y
-      - apt-get install -y curl linux-generic
       - echo "done" > /tmp/cloud-config.done
     EOF
 

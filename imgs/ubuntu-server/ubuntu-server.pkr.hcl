@@ -12,6 +12,12 @@ variable "proxmox_url" {
   default = "https://192.168.4.100:8006/api2/json"
 }
 
+variable "proxmox_ip" {
+  type    = string
+  default = "192.168.4.100"
+}
+
+
 variable "proxmox_token_id" {
   type = string
 }
@@ -82,10 +88,31 @@ build {
   sources = ["source.proxmox-iso.ubuntu"]
 
   # Install your common packages
-  provisioner "shell" {
-    inline = [
-      "sudo cloud-init clean",
-      "sudo rm -rf /var/lib/cloud/*"
-    ]
+    provisioner "shell" {
+      inline = [
+        "while [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; sleep 1; done",
+
+        # Config changes first
+        "sudo sed -i 's/GRUB_CMDLINE_LINUX=\"\"/GRUB_CMDLINE_LINUX=\"net.ifnames=0 biosdevname=0\"/' /etc/default/grub",
+        "sudo update-grub",
+        "sudo rm -f /etc/netplan/00-installer-config.yaml",
+
+        # Cleanup last
+        "sudo rm -f /var/lib/dhcp/*.leases",
+        "sudo rm -f /var/lib/dhcp/*.leases~",
+        "sudo cloud-init clean --logs",
+        "sudo rm -f /etc/cloud/cloud-init.disabled",
+        "sudo rm -f /etc/netplan/50-cloud-init.yaml",
+        "sudo truncate -s 0 /etc/machine-id",
+        "sudo rm -f /var/lib/dbus/machine-id",
+        "sudo sync"
+      ]
+    }
+    provisioner "shell-local" {
+      inline = [
+        "ssh -o StrictHostKeyChecking=no root@${var.proxmox_ip} 'qemu-img convert -f raw -O qcow2 /dev/pve/vm-${build.ID}-disk-0 /tmp/ubuntu-template.qcow2'",
+        "ssh -o StrictHostKeyChecking=no root@${var.proxmox_ip} 'cp /tmp/ubuntu-template.qcow2 /var/lib/vz/import/ubuntu-template.qcow2'",
+        "ssh -o StrictHostKeyChecking=no root@${var.proxmox_ip} 'rm -f /tmp/ubuntu-template.qcow2'"
+        ]
+    }
   }
-}

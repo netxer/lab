@@ -33,7 +33,7 @@ data "proxmox_virtual_environment_file" "imported_file" {
   node_name    = "nucpve"
   datastore_id = "local"
   content_type = "import"
-  file_name    = "temp.qcow2"
+  file_name    = "ubuntu-template.qcow2"
 }
 
 ######################
@@ -174,7 +174,7 @@ resource "null_resource" "transfer_ansible_files" {
 
   # Wait for cloud-init to finish first
   provisioner "remote-exec" {
-    inline = ["cloud-init status --wait"]
+    inline = ["cloud-init status --wait || [ $? -eq 2 ]"]
     connection {
       host        = proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0]
       user        = "ubuntu"

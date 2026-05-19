@@ -6,7 +6,6 @@ autoinstall:
   keyboard:
     layout: us
   apt:
-    proxy: http://192.168.2.235:3142/
     mirror-selection:
       primary:
         - uri: http://il.archive.ubuntu.com/ubuntu
@@ -14,12 +13,17 @@ autoinstall:
   identity:
     hostname: packer-build
     username: ubuntu
-    password: "$6$SuEi126lbqAZXXpp$Cyzqc2QdySaPXcew3FkB5jnR6bsqpPzeXemlwONKMLgWaJriiZaqdsU/gTGNWoW6M3tgJDee0/xEpfbyy1J1I/"
+    password: "$6$DKYHpH3muvXu7xem$.EQYpNCowuq1V6rnsTR2C8yuwsbCZyKTIxg6N1ACAy6wbMlySIGiEhTO0zdtrpGXEGLWTSHEWb2v.GeCdq.pQ0"
   ssh:
     install-server: true
     allow-pw: true
   packages:
     - qemu-guest-agent
+    - mc
+    - bzip2
+    - build-essential
+    - linux-image-virtual
+    - linux-tools-virtual
     - curl
     - linux-generic
     - python3-pip
@@ -42,6 +46,4 @@ autoinstall:
     # Disable swap
     - curtin in-target -- swapoff -a
     - curtin in-target -- sed -i '/ swap / s/^/#/' /etc/fstab
-    # Clean machine-id so cloned VMs get unique IDs
-    - curtin in-target -- truncate -s 0 /etc/machine-id
-    - curtin in-target -- rm -f /var/lib/dbus/machine-id
+   

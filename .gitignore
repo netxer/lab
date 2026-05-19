@@ -65,3 +65,7 @@ ansible_key*
 *.swp
 *.swo
 *.iso
+*.log
+*.ini
+*.yml
+.claud
