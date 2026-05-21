@@ -18,6 +18,7 @@ autoinstall:
     install-server: true
     allow-pw: true
   packages:
+    - cloud-guest-utils
     - qemu-guest-agent
     - mc
     - bzip2

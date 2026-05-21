@@ -97,6 +97,14 @@ build {
         "sudo update-grub",
         "sudo rm -f /etc/netplan/00-installer-config.yaml",
 
+        # Ensure cloud-init growpart works for LVM-based root
+        "sudo tee /etc/cloud/cloud.cfg.d/99-growpart.cfg > /dev/null << 'EOF'\ngrowpart:\n  mode: auto\n  devices: ['/']\n  ignore_growroot_disabled: false\nresize_rootfs: true\nEOF",
+
+        # Auto-login ubuntu user on VGA console (tty1) and serial console (ttyS0)
+        "sudo mkdir -p /etc/systemd/system/getty@tty1.service.d /etc/systemd/system/serial-getty@ttyS0.service.d",
+        "sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf << 'EOF'\n[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin ubuntu --noclear %I $TERM\nEOF",
+        "sudo tee /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf << 'EOF'\n[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin ubuntu --keep-baud 115200,57600,38400,9600 %I $TERM\nEOF",
+
         # Cleanup last
         "sudo rm -f /var/lib/dhcp/*.leases",
         "sudo rm -f /var/lib/dhcp/*.leases~",
