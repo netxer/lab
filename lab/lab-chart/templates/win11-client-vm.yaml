@@ -1,0 +1,89 @@
+{{/*
+Windows 11 workstation on the LAN.
+
+Same approach as the DC: cloned from `lab-templates/win11-golden` per install.
+The trainee will RDP into this from the observer network (via pfSense),
+or you can put more clients in by templating this file as a range.
+*/}}
+{{- if .Values.includeWin11 }}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: win11-client
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lab.labels" . | nindent 4 }}
+    role: workstation
+spec:
+  running: true
+  dataVolumeTemplates:
+    - metadata:
+        name: win11-disk
+        labels:
+          {{- include "lab.labels" . | nindent 10 }}
+      spec:
+        storage:
+          resources:
+            requests:
+              storage: 80Gi
+        source:
+          pvc:
+            namespace: {{ .Values.goldenImages.templatesNamespace }}
+            name: {{ .Values.goldenImages.win11Client }}
+  template:
+    metadata:
+      labels:
+        {{- include "lab.labels" . | nindent 8 }}
+        kubevirt.io/vm: win11-client
+        role: workstation
+    spec:
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      domain:
+        cpu:
+          cores: {{ .Values.win11.cpu }}
+        memory:
+          guest: {{ .Values.win11.memory }}
+        features:
+          acpi: {}
+          smm: {}
+          hyperv:
+            relaxed: {}
+            vapic: {}
+            spinlocks:
+              spinlocks: 8191
+        clock:
+          utc: {}
+          timer:
+            hpet: { present: false }
+            pit: { tickPolicy: delay }
+            rtc: { tickPolicy: catchup }
+            hyperv: {}
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: true
+        devices:
+          tpm: {}
+          disks:
+            - name: osdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: lan
+              bridge: {}
+              model: virtio
+          inputs:
+            - type: tablet
+              bus: usb
+              name: tablet
+      networks:
+        - name: lan
+          multus:
+            default: true
+            networkName: {{ .Values.networks.lan.name }}
+      volumes:
+        - name: osdisk
+          dataVolume:
+            name: win11-disk
+{{- end }}

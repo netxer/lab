@@ -1,0 +1,80 @@
+# =============================================================================
+# Default values for the lab chart.
+# Override per release with --set or a -f values file.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Trainee-specific values (override per release)
+# -----------------------------------------------------------------------------
+trainee:
+  name: alice                 # used in resource names and AD username
+  sshPubKey: ""               # required: paste public key string
+  cpu: 4
+  memory: 8Gi
+
+# How long the lab lives before kube-janitor sweeps it
+ttl: 4h
+
+# -----------------------------------------------------------------------------
+# Scheduling — lab nodes must have the matching label
+# -----------------------------------------------------------------------------
+nodeSelector:
+  lab-node: "true"
+
+# -----------------------------------------------------------------------------
+# Container registry hosting your prebuilt containerDisk images
+# (pfSense and trainee OS are pulled from here at VM start)
+# -----------------------------------------------------------------------------
+registry: registry.lab.local
+imageTag: v1
+
+# -----------------------------------------------------------------------------
+# Golden PVCs for VMs that need real disks (Win11, DC)
+# These live in a system namespace and get cloned per lab.
+# -----------------------------------------------------------------------------
+goldenImages:
+  templatesNamespace: lab-templates
+  win11Client: win11-golden
+  domainController: dc-golden
+
+# -----------------------------------------------------------------------------
+# Network segments (bridges must already exist on the lab node)
+# -----------------------------------------------------------------------------
+networks:
+  lan:
+    name: lab-lan
+    bridge: br-lan
+    subnet: 10.10.10.0/24
+    gateway: 10.10.10.1       # pfSense LAN IP
+  dmz:
+    name: lab-dmz
+    bridge: br-dmz
+    subnet: 10.10.20.0/24
+    gateway: 10.10.20.1
+  observer:
+    name: lab-observer
+    bridge: br-observer
+    subnet: 10.10.30.0/24
+    gateway: 10.10.30.1       # pfSense observer IP
+
+# -----------------------------------------------------------------------------
+# Which VMs to include — toggle parts off for lighter labs
+# -----------------------------------------------------------------------------
+includeDC: true
+includeWin11: true
+includeTrainee: true
+
+# -----------------------------------------------------------------------------
+# Per-VM resource sizing
+# -----------------------------------------------------------------------------
+pfsense:
+  cpu: 2
+  memory: 2Gi
+
+dc:
+  cpu: 2
+  memory: 4Gi
+
+win11:
+  cpu: 4
+  memory: 8Gi

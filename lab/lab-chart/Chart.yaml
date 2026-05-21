@@ -1,0 +1,12 @@
+apiVersion: v2
+name: lab
+description: Disposable cyber-range lab on Kubernetes via KubeVirt
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - kubevirt
+  - cyber-range
+  - lab
+  - training

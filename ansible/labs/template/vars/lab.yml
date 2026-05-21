@@ -1,0 +1,33 @@
+---
+# Lab instance variables — override per-lab at the CLI:
+#   ansible-playbook site.yml -e @my-lab.yml
+#   ansible-playbook site.yml -e "lab_name=alice-corporate trainee_name=alice"
+
+lab_name: "alice-corporate"
+lab_scenario: "corporate-ad"          # scenario template in the Lab operator
+lab_ttl: "4h"
+lab_cpu: 8
+lab_memory: "16Gi"
+
+trainee_name: "alice"
+trainee_ssh_pub_key: ""               # required: ssh-ed25519 AAAA...
+
+# Kubernetes settings
+kubeconfig: "/home/ubuntu/.kube/config"
+lab_api_group: "cyberrange.example.io/v1"
+lab_namespace_prefix: "lab"
+
+# Platform namespaces
+kubevirt_namespace: "kubevirt-hyperconverged"
+
+# Bridge / VLAN settings (applied by NMState NNCP)
+lab_bridges:
+  - name: br-lan
+  - name: br-dmz
+  - name: br-observer
+
+# Upstream interface to attach VLAN-aware bridges to
+host_uplink: "eth1"                   # adjust to match your node NIC name
+
+# HCO deploy branch/tag — "main" always pulls latest stable deploy script
+hco_branch: "main"

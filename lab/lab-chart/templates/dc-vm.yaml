@@ -1,0 +1,92 @@
+{{/*
+Active Directory Domain Controller (Windows Server).
+
+Cloned from a golden PVC in `lab-templates` namespace — CDI handles the
+copy at install time. The cloned PVC lives in this lab namespace and is
+deleted when the lab is torn down.
+
+Win11 requirements (TPM 2.0, UEFI + Secure Boot, SMM) apply to Server 2022+
+too, so the same flags are set here.
+*/}}
+{{- if .Values.includeDC }}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: dc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lab.labels" . | nindent 4 }}
+    role: domain-controller
+spec:
+  running: true
+  dataVolumeTemplates:
+    - metadata:
+        name: dc-disk
+        labels:
+          {{- include "lab.labels" . | nindent 10 }}
+      spec:
+        storage:
+          resources:
+            requests:
+              storage: 80Gi
+        source:
+          pvc:
+            namespace: {{ .Values.goldenImages.templatesNamespace }}
+            name: {{ .Values.goldenImages.domainController }}
+  template:
+    metadata:
+      labels:
+        {{- include "lab.labels" . | nindent 8 }}
+        kubevirt.io/vm: dc
+        role: domain-controller
+    spec:
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      domain:
+        cpu:
+          cores: {{ .Values.dc.cpu }}
+        memory:
+          guest: {{ .Values.dc.memory }}
+        features:
+          acpi: {}
+          smm: {}                    # required for UEFI+Secure Boot
+          hyperv:
+            relaxed: {}
+            vapic: {}
+            spinlocks:
+              spinlocks: 8191
+        clock:
+          utc: {}
+          timer:
+            hpet: { present: false }
+            pit: { tickPolicy: delay }
+            rtc: { tickPolicy: catchup }
+            hyperv: {}
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: true
+        devices:
+          tpm: {}                    # vTPM 2.0
+          disks:
+            - name: osdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: lan
+              bridge: {}
+              model: virtio
+          inputs:
+            - type: tablet
+              bus: usb
+              name: tablet
+      networks:
+        - name: lan
+          multus:
+            default: true            # only NIC — no pod network
+            networkName: {{ .Values.networks.lan.name }}
+      volumes:
+        - name: osdisk
+          dataVolume:
+            name: dc-disk
+{{- end }}

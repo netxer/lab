@@ -1,0 +1,21 @@
+---
+# Full cyber-range lab platform deploy — runs all phases in order.
+# Run each playbook individually for targeted operations, or this to do everything.
+#
+# Prerequisites:
+#   - K3s cluster is up (ansible/playbooks/k3s/site.yml completed)
+#   - All nodes have nested virtualisation enabled (Proxmox cpu=host, +vmx/+svm)
+#   - vars/lab.yml is populated (especially trainee_ssh_pub_key)
+#
+# Usage:
+#   ansible-playbook -i ../../inv/ansible_inventory.ini site.yml \
+#     -e "lab_name=alice-corporate trainee_name=alice trainee_ssh_pub_key='ssh-ed25519 AAAA...'"
+
+- name: Phase 1 — Prepare nodes for KubeVirt (KVM modules)
+  import_playbook: 01-node-prep.yml
+
+- name: Phase 2 — Bootstrap KubeVirt platform (HCO + NNCP + NFD)
+  import_playbook: 02-platform-bootstrap.yml
+
+- name: Phase 3 — Create lab instance
+  import_playbook: 03-lab-create.yml

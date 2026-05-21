@@ -1,0 +1,27 @@
+{{/*
+Generate a NetworkAttachmentDefinition for each network in .Values.networks.
+Each NAD references a Linux bridge that must exist on the lab node.
+ipam: {} means no CNI-side IP assignment — pfSense will DHCP these.
+*/}}
+{{- range $key, $net := .Values.networks }}
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: {{ $net.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "lab.labels" $ | nindent 4 }}
+  annotations:
+    # Tells the scheduler this NAD requires the named bridge on the node
+    k8s.v1.cni.cncf.io/resourceName: bridge.network.kubevirt.io/{{ $net.bridge }}
+spec:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "name": "{{ $net.name }}",
+      "type": "bridge",
+      "bridge": "{{ $net.bridge }}",
+      "ipam": {}
+    }
+{{- end }}

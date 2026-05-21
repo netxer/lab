@@ -1,0 +1,15 @@
+---
+# Full cluster deployment — run each playbook individually or use this to do it all at once.
+# Usage: ansible-playbook -i ../inv/ansible_inventory.ini site.yml
+
+- name: Install k8s snap on all nodes
+  import_playbook: 01-install-k8s.yml
+
+- name: Bootstrap control plane
+  import_playbook: 02-bootstrap-cluster.yml
+
+- name: Join worker nodes
+  import_playbook: 03-join-workers.yml
+
+- name: Verify cluster status
+  import_playbook: 04-k8s-status.yml

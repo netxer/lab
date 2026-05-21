@@ -1,0 +1,71 @@
+{{/*
+pfSense firewall/router VM.
+
+- WAN  : pod network (NAT to internet)
+- LAN  : br-lan      → workstations
+- DMZ  : br-dmz      → public-facing servers
+- OBS  : br-observer → trainee machines
+
+Uses containerDisk (read-only image, ephemeral state) so each new lab gets a
+pristine pfSense. Build & push the image once; see SETUP.md.
+*/}}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: pfsense
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lab.labels" . | nindent 4 }}
+    role: firewall
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        {{- include "lab.labels" . | nindent 8 }}
+        kubevirt.io/vm: pfsense
+        role: firewall
+    spec:
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      domain:
+        cpu:
+          cores: {{ .Values.pfsense.cpu }}
+        memory:
+          guest: {{ .Values.pfsense.memory }}
+        devices:
+          disks:
+            - name: osdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: wan
+              masquerade: {}              # NAT to pod network
+              model: virtio
+            - name: lan
+              bridge: {}
+              model: virtio
+            - name: dmz
+              bridge: {}
+              model: virtio
+            - name: observer
+              bridge: {}
+              model: virtio
+      networks:
+        - name: wan
+          pod: {}
+        - name: lan
+          multus:
+            networkName: {{ .Values.networks.lan.name }}
+        - name: dmz
+          multus:
+            networkName: {{ .Values.networks.dmz.name }}
+        - name: observer
+          multus:
+            networkName: {{ .Values.networks.observer.name }}
+      volumes:
+        - name: osdisk
+          containerDisk:
+            # Pre-built pfSense image with LAN/DMZ/OBS interfaces pre-assigned
+            # and basic firewall rules baked in
+            image: {{ .Values.registry }}/vm-disks/pfsense:{{ .Values.imageTag }}

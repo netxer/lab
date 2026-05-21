@@ -1,0 +1,58 @@
+---
+- name: Generate join tokens on control node for each worker
+  hosts: control[0]
+  become: yes
+  tasks:
+    - name: Generate join token for each worker node
+      ansible.builtin.command: "k8s get-join-token {{ item }}"
+      loop: "{{ groups['workers'] }}"
+      register: token_results
+
+    - name: Store tokens keyed by worker hostname
+      ansible.builtin.set_fact:
+        worker_tokens: "{{ dict(groups['workers'] | zip(token_results.results | map(attribute='stdout') | list)) }}"
+
+- name: Join worker nodes to the cluster
+  hosts: workers
+  become: yes
+  serial: 1
+  tasks:
+    - name: Check if node is already part of the cluster
+      ansible.builtin.command: k8s status
+      register: worker_status_pre
+      changed_when: false
+      failed_when: false
+
+    - name: Join cluster using generated token
+      ansible.builtin.command: >
+        k8s join-cluster {{ hostvars[groups['control'][0]]['worker_tokens'][inventory_hostname] }}
+      when: worker_status_pre.rc != 0
+      async: 300
+      poll: 15
+
+    - name: Wait for node to become ready
+      ansible.builtin.command: k8s status --wait-ready --timeout 120s
+      changed_when: false
+      when: worker_status_pre.rc != 0
+
+    - name: Check status after join
+      ansible.builtin.command: k8s status
+      register: worker_status_post
+      changed_when: false
+
+    - name: Display worker node status
+      ansible.builtin.debug:
+        msg: "{{ worker_status_post.stdout_lines }}"
+
+- name: Verify all nodes visible from control plane
+  hosts: control[0]
+  become: yes
+  tasks:
+    - name: List all cluster nodes
+      ansible.builtin.command: k8s kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+
+    - name: Display node list
+      ansible.builtin.debug:
+        msg: "{{ nodes_output.stdout_lines }}"

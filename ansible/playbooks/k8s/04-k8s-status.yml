@@ -1,0 +1,45 @@
+---
+- name: Check k8s status on every node
+  hosts: all
+  become: yes
+  tasks:
+    - name: Run k8s status
+      ansible.builtin.command: k8s status
+      register: k8s_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display k8s status
+      ansible.builtin.debug:
+        msg: "{{ k8s_status.stdout_lines }}"
+
+- name: Cluster-wide view from control node
+  hosts: control[0]
+  become: yes
+  tasks:
+    - name: Get all nodes
+      ansible.builtin.command: k8s kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+
+    - name: Display nodes
+      ansible.builtin.debug:
+        msg: "{{ nodes_output.stdout_lines }}"
+
+    - name: Get all pods across namespaces
+      ansible.builtin.command: k8s kubectl get pods --all-namespaces
+      register: pods_output
+      changed_when: false
+
+    - name: Display pods
+      ansible.builtin.debug:
+        msg: "{{ pods_output.stdout_lines }}"
+
+    - name: Get cluster services
+      ansible.builtin.command: k8s kubectl get services --all-namespaces
+      register: services_output
+      changed_when: false
+
+    - name: Display services
+      ansible.builtin.debug:
+        msg: "{{ services_output.stdout_lines }}"

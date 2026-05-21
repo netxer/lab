@@ -1,0 +1,61 @@
+---
+- name: Check k3s service status on every node
+  hosts: all
+  become: yes
+  tasks:
+    - name: Detect which k3s service is present (server vs agent)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+      register: k3s_service_check
+      failed_when: false
+      loop:
+        - k3s
+        - k3s-agent
+
+    - name: Display k3s service status
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.name }}: {{ item.status.ActiveState | default('not installed') }}
+      loop: "{{ k3s_service_check.results }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+- name: Cluster-wide view from control node
+  hosts: control[0]
+  become: yes
+  tasks:
+    - name: Get all nodes
+      ansible.builtin.command: k3s kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+
+    - name: Display nodes
+      ansible.builtin.debug:
+        msg: "{{ nodes_output.stdout_lines }}"
+
+    - name: Get all pods across namespaces
+      ansible.builtin.command: k3s kubectl get pods --all-namespaces
+      register: pods_output
+      changed_when: false
+
+    - name: Display pods
+      ansible.builtin.debug:
+        msg: "{{ pods_output.stdout_lines }}"
+
+    - name: Get cluster services
+      ansible.builtin.command: k3s kubectl get services --all-namespaces
+      register: services_output
+      changed_when: false
+
+    - name: Display services
+      ansible.builtin.debug:
+        msg: "{{ services_output.stdout_lines }}"
+
+    - name: Show k3s server version
+      ansible.builtin.command: k3s --version
+      register: k3s_version
+      changed_when: false
+
+    - name: Display k3s version
+      ansible.builtin.debug:
+        msg: "{{ k3s_version.stdout_lines }}"

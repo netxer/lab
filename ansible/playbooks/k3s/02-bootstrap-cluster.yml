@@ -1,0 +1,82 @@
+---
+- name: Bootstrap k3s server on first control node
+  hosts: control[0]
+  become: yes
+  vars:
+    k3s_server_config_dir: /etc/rancher/k3s
+    k3s_kubeconfig_system: /etc/rancher/k3s/k3s.yaml
+    k3s_kubeconfig_user: /home/ubuntu/.kube/config
+    k3s_token_file: /var/lib/rancher/k3s/server/node-token
+  tasks:
+    - name: Check if k3s server service is already running
+      ansible.builtin.systemd:
+        name: k3s
+      register: k3s_service_pre
+      failed_when: false
+
+    - name: Install k3s server via official install script
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | sh -
+      environment:
+        INSTALL_K3S_EXEC: "server --disable traefik"
+      when: k3s_service_pre.status.ActiveState is not defined
+             or k3s_service_pre.status.ActiveState != 'active'
+      async: 300
+      poll: 15
+
+    - name: Enable and start k3s service
+      ansible.builtin.systemd:
+        name: k3s
+        enabled: yes
+        state: started
+
+    - name: Wait for k3s server to be ready
+      ansible.builtin.command: >
+        k3s kubectl wait --for=condition=Ready node --all --timeout=120s
+      register: k3s_ready
+      changed_when: false
+      retries: 10
+      delay: 15
+      until: k3s_ready.rc == 0
+
+    - name: Display cluster node status
+      ansible.builtin.debug:
+        msg: "{{ k3s_ready.stdout_lines }}"
+
+    - name: Read node-token for worker joins
+      ansible.builtin.slurp:
+        src: "{{ k3s_token_file }}"
+      register: k3s_node_token_raw
+
+    - name: Store node-token as fact
+      ansible.builtin.set_fact:
+        k3s_node_token: "{{ k3s_node_token_raw.content | b64decode | trim }}"
+
+    - name: Ensure .kube directory exists for ubuntu user
+      ansible.builtin.file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
+
+    - name: Copy kubeconfig for ubuntu user
+      ansible.builtin.copy:
+        src: "{{ k3s_kubeconfig_system }}"
+        dest: "{{ k3s_kubeconfig_user }}"
+        remote_src: yes
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    - name: Replace 127.0.0.1 with control node IP in kubeconfig
+      ansible.builtin.replace:
+        path: "{{ k3s_kubeconfig_user }}"
+        regexp: 'https://127\.0\.0\.1:6443'
+        replace: "https://{{ ansible_facts['default_ipv4']['address'] }}:6443"
+
+  handlers:
+    - name: restart k3s
+      ansible.builtin.systemd:
+        name: k3s
+        state: restarted

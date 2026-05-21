@@ -1,0 +1,69 @@
+---
+# Reports status and connection details for one or all labs.
+# Usage (single lab):  ansible-playbook ... 04-lab-status.yml -e "lab_name=alice-corporate"
+# Usage (all labs):    ansible-playbook ... 04-lab-status.yml -e "lab_name=all"
+- name: Report lab status and endpoints
+  hosts: control[0]
+  become: no
+  vars_files:
+    - vars/lab.yml
+  vars:
+    lab_name: "all"
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: List all labs (all mode)
+      ansible.builtin.command: kubectl get labs -A -o wide
+      register: all_labs
+      changed_when: false
+      when: lab_name == "all"
+
+    - name: Display all labs
+      ansible.builtin.debug:
+        msg: "{{ all_labs.stdout_lines }}"
+      when: lab_name == "all"
+
+    - name: Get specific lab status (single mode)
+      ansible.builtin.command: kubectl get lab {{ lab_name }} -o yaml
+      register: single_lab
+      changed_when: false
+      when: lab_name != "all"
+
+    - name: Get specific lab endpoints (single mode)
+      ansible.builtin.command: >
+        kubectl get lab {{ lab_name }}
+        -o jsonpath='{.status}'
+      register: lab_status
+      changed_when: false
+      when: lab_name != "all"
+
+    - name: Display lab status
+      ansible.builtin.debug:
+        msg: "{{ lab_status.stdout | from_json | to_nice_yaml }}"
+      when: lab_name != "all"
+
+    - name: Get VMs in lab namespace (single mode)
+      ansible.builtin.shell: |
+        NS=$(kubectl get lab {{ lab_name }} -o jsonpath='{.status.namespace}' 2>/dev/null)
+        [ -z "$NS" ] && echo "No namespace yet" && exit 0
+        echo "=== Namespace: $NS ==="
+        kubectl get vm,vmi,svc,pvc -n $NS 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      register: lab_resources
+      changed_when: false
+      when: lab_name != "all"
+
+    - name: Display lab resources
+      ansible.builtin.debug:
+        msg: "{{ lab_resources.stdout_lines }}"
+      when: lab_name != "all"
+
+    - name: Platform health snapshot
+      ansible.builtin.command: kubectl get hco,nncp -A
+      register: platform_health
+      changed_when: false
+
+    - name: Display platform health
+      ansible.builtin.debug:
+        msg: "{{ platform_health.stdout_lines }}"

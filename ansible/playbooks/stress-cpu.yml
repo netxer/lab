@@ -1,0 +1,70 @@
+---
+- name: CPU stress test
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: yes
+  vars:
+    stress_duration: "{{ duration | default('60') }}"
+    stress_workers: "{{ workers | default(ansible_processor_vcpus) }}"
+
+  tasks:
+    - name: Install stress-ng
+      ansible.builtin.apt:
+        name: stress-ng
+        state: present
+        update_cache: yes
+      become: yes
+
+    - name: Capture pre-stress load
+      ansible.builtin.command: uptime
+      register: pre_load
+      changed_when: false
+
+    - name: Display pre-stress load
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} pre-stress: {{ pre_load.stdout | trim }}"
+
+    - name: Run CPU stress ({{ stress_duration }}s, {{ stress_workers }} workers)
+      ansible.builtin.command: >
+        stress-ng --cpu {{ stress_workers }}
+                  --timeout {{ stress_duration }}s
+                  --metrics-brief
+                  --yaml /tmp/stress-results.yml
+      register: stress_run
+      changed_when: false
+      become: no
+
+    - name: Capture post-stress load
+      ansible.builtin.command: uptime
+      register: post_load
+      changed_when: false
+
+    - name: Display stress output
+      ansible.builtin.debug:
+        msg: "{{ stress_run.stderr_lines }}"
+      when: stress_run.stderr_lines | length > 0
+
+    - name: Read metrics file
+      ansible.builtin.slurp:
+        src: /tmp/stress-results.yml
+      register: metrics_raw
+      ignore_errors: yes
+
+    - name: Display metrics
+      ansible.builtin.debug:
+        msg: "{{ metrics_raw.content | b64decode }}"
+      when: metrics_raw is succeeded
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "Host:       {{ inventory_hostname }}"
+          - "vCPUs:      {{ ansible_processor_vcpus }}"
+          - "Workers:    {{ stress_workers }}"
+          - "Duration:   {{ stress_duration }}s"
+          - "Pre-load:   {{ pre_load.stdout | trim }}"
+          - "Post-load:  {{ post_load.stdout | trim }}"
+
+    - name: Clean up metrics file
+      ansible.builtin.file:
+        path: /tmp/stress-results.yml
+        state: absent

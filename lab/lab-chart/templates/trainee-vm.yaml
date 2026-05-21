@@ -1,0 +1,98 @@
+{{/*
+Trainee VM — dual-homed Ubuntu box.
+
+NIC1 (lab)      → observer network → pfSense → LAN/DMZ access
+NIC2 (internet) → pod network      → direct internet (bypasses pfSense)
+
+Critical cloud-init behaviour:
+- enp1s0 (lab NIC) does DHCP but ignores pfSense's default route and DNS
+- enp2s0 (internet NIC) does DHCP and gets the default route
+- Static routes are added so lab subnets reach pfSense, not the internet NIC
+- IP forwarding is disabled so the trainee can't accidentally bridge networks
+*/}}
+{{- if .Values.includeTrainee }}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: trainee-{{ .Values.trainee.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lab.labels" . | nindent 4 }}
+    role: trainee
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        {{- include "lab.labels" . | nindent 8 }}
+        kubevirt.io/vm: trainee-{{ .Values.trainee.name }}
+        role: trainee
+    spec:
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      domain:
+        cpu:
+          cores: {{ .Values.trainee.cpu }}
+        memory:
+          guest: {{ .Values.trainee.memory }}
+        devices:
+          disks:
+            - name: osdisk
+              disk:
+                bus: virtio
+            - name: cloudinit
+              disk:
+                bus: virtio
+          interfaces:
+            - name: lab
+              bridge: {}
+              model: virtio
+            - name: internet
+              masquerade: {}
+              model: virtio
+      networks:
+        - name: lab
+          multus:
+            networkName: {{ .Values.networks.observer.name }}
+        - name: internet
+          pod: {}
+      volumes:
+        - name: osdisk
+          containerDisk:
+            # Pre-built Ubuntu/Kali image with whatever tooling the lab needs
+            image: {{ .Values.registry }}/vm-disks/trainee:{{ .Values.imageTag }}
+        - name: cloudinit
+          cloudInitNoCloud:
+            networkData: |
+              version: 2
+              ethernets:
+                enp1s0:
+                  dhcp4: true
+                  dhcp4-overrides:
+                    use-routes: false      # ignore pfSense's default route
+                    use-dns: false         # internet DNS only
+                  routes:
+                    - to: {{ .Values.networks.lan.subnet }}
+                      via: {{ .Values.networks.observer.gateway }}
+                    - to: {{ .Values.networks.dmz.subnet }}
+                      via: {{ .Values.networks.observer.gateway }}
+                enp2s0:
+                  dhcp4: true               # gets default route from pod network
+            userData: |
+              #cloud-config
+              hostname: trainee-{{ .Values.trainee.name }}
+              users:
+                - name: {{ .Values.trainee.name }}
+                  sudo: ALL=(ALL) NOPASSWD:ALL
+                  shell: /bin/bash
+                  ssh_authorized_keys:
+                    - {{ .Values.trainee.sshPubKey | quote }}
+              # Disable IP forwarding so trainee can't bridge networks
+              write_files:
+                - path: /etc/sysctl.d/99-no-forward.conf
+                  content: |
+                    net.ipv4.ip_forward=0
+                    net.ipv6.conf.all.forwarding=0
+              runcmd:
+                - sysctl -p /etc/sysctl.d/99-no-forward.conf
+{{- end }}

@@ -3,7 +3,7 @@
 ######################
 
 resource "proxmox_virtual_environment_vm" "ansible_controller" {
-  count     = 1
+  count     = var.ansible_count
   name      = "ansible-${count.index + 1}"
   node_name = "nucpve"
 
@@ -35,8 +35,8 @@ resource "proxmox_virtual_environment_vm" "ansible_controller" {
   }
 
   memory {
-    dedicated = 2048
-    floating  = 2048 # set equal to dedicated to enable ballooning
+    dedicated = 4096
+    floating  = 4096 # set equal to dedicated to enable ballooning
   }
 
   disk {
@@ -45,7 +45,7 @@ resource "proxmox_virtual_environment_vm" "ansible_controller" {
     interface    = "virtio0"
     iothread     = true
     discard      = "on"
-    size         = 20
+    size         = 50
   }
 }
 
@@ -87,8 +87,8 @@ resource "proxmox_virtual_environment_vm" "control_vm" {
   }
 
   memory {
-    dedicated = 2048
-    floating  = 2048 # set equal to dedicated to enable ballooning
+    dedicated = 8192
+    floating  = 8192 # set equal to dedicated to enable ballooning
   }
 
   disk {
@@ -97,7 +97,7 @@ resource "proxmox_virtual_environment_vm" "control_vm" {
     interface    = "virtio0"
     iothread     = true
     discard      = "on"
-    size         = 20
+    size         = 50
   }
 
   lifecycle {
@@ -141,8 +141,8 @@ resource "proxmox_virtual_environment_vm" "node" {
   }
 
   memory {
-    dedicated = 2048
-    floating  = 2048 # set equal to dedicated to enable ballooning
+    dedicated = 4096
+    floating  = 4096 # set equal to dedicated to enable ballooning
   }
 
   disk {
@@ -151,7 +151,7 @@ resource "proxmox_virtual_environment_vm" "node" {
     interface    = "virtio0"
     iothread     = true
     discard      = "on"
-    size         = 20
+    size         = 50
   }
 
   lifecycle {

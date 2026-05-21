@@ -1,0 +1,86 @@
+---
+# Spawns a single lab instance by applying a Lab CR.
+# The Lab operator (Layer 3) materialises: namespace, NADs, VMs, Services, TTL annotation.
+#
+# Required vars (pass via -e or override vars/lab.yml):
+#   lab_name            unique name, e.g. alice-corporate
+#   lab_scenario        scenario template name, e.g. corporate-ad
+#   trainee_name        trainee identifier
+#   trainee_ssh_pub_key full SSH public key string
+#
+# Usage:
+#   ansible-playbook -i ../../inv/ansible_inventory.ini 03-lab-create.yml \
+#     -e "lab_name=alice-corporate trainee_name=alice trainee_ssh_pub_key='ssh-ed25519 AAAA...'"
+- name: Create a cyber-range lab
+  hosts: control[0]
+  become: no
+  vars_files:
+    - vars/lab.yml
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.fail:
+        msg: "trainee_ssh_pub_key is required — pass it with -e trainee_ssh_pub_key='ssh-ed25519 AAAA...'"
+      when: trainee_ssh_pub_key == ""
+
+    - name: Render Lab manifest from template
+      ansible.builtin.template:
+        src: templates/lab.yaml.j2
+        dest: /tmp/lab-{{ lab_name }}.yaml
+        mode: '0644'
+
+    - name: Apply Lab resource
+      ansible.builtin.command: kubectl apply -f /tmp/lab-{{ lab_name }}.yaml
+      register: lab_apply
+      changed_when: "'created' in lab_apply.stdout or 'configured' in lab_apply.stdout"
+
+    - name: Show apply result
+      ansible.builtin.debug:
+        msg: "{{ lab_apply.stdout }}"
+
+    - name: Wait for lab phase to reach Running (up to 10 min)
+      ansible.builtin.shell: |
+        for i in $(seq 1 60); do
+          phase=$(kubectl get lab {{ lab_name }} \
+            -o jsonpath='{.status.phase}' 2>/dev/null)
+          echo "Phase: $phase"
+          [ "$phase" = "Running" ] && exit 0
+          [ "$phase" = "Failed" ] && exit 1
+          sleep 10
+        done
+        echo "Timeout waiting for lab to reach Running"
+        exit 1
+      args:
+        executable: /bin/bash
+      register: lab_wait
+      changed_when: false
+
+    - name: Retrieve lab endpoints
+      ansible.builtin.command: >
+        kubectl get lab {{ lab_name }}
+        -o jsonpath='{.status.endpoints}'
+      register: lab_endpoints
+      changed_when: false
+
+    - name: Retrieve lab namespace
+      ansible.builtin.command: >
+        kubectl get lab {{ lab_name }}
+        -o jsonpath='{.status.namespace}'
+      register: lab_ns
+      changed_when: false
+
+    - name: Retrieve lab expiry
+      ansible.builtin.command: >
+        kubectl get lab {{ lab_name }}
+        -o jsonpath='{.status.expiresAt}'
+      register: lab_expiry
+      changed_when: false
+
+    - name: Lab connection summary
+      ansible.builtin.debug:
+        msg:
+          - "Lab:       {{ lab_name }}"
+          - "Namespace: {{ lab_ns.stdout }}"
+          - "Endpoints: {{ lab_endpoints.stdout }}"
+          - "Expires:   {{ lab_expiry.stdout }}"

@@ -1,0 +1,236 @@
+---
+# Rolling Canonical k8s (snap) cluster upgrade
+#
+# Usage:
+#   ansible-playbook -i ../../inv/ansible_inventory.ini update.yml
+#   ansible-playbook -i ../../inv/ansible_inventory.ini update.yml -e k8s_channel=1.32/stable
+#
+# Order of operations:
+#   1. Pre-flight  — show current versions, verify every node is Ready
+#   2. Control plane upgrade — snap refresh, wait for cluster ready
+#   3. Workers rolling upgrade (serial: 1) — cordon → drain → snap refresh → wait → uncordon
+#   4. Post-upgrade verification — confirm all nodes Ready
+
+- name: Pre-flight — gather versions and verify cluster health
+  hosts: control[0]
+  become: yes
+  vars:
+    k8s_channel: ""
+  tasks:
+    - name: Show installed k8s snap version on control node
+      ansible.builtin.command: snap list k8s
+      register: snap_list_pre
+      changed_when: false
+
+    - name: Display current snap info
+      ansible.builtin.debug:
+        msg: "{{ snap_list_pre.stdout_lines }}"
+
+    - name: Check available snap refresh for k8s
+      ansible.builtin.command: snap info k8s
+      register: snap_info
+      changed_when: false
+
+    - name: Gather current node versions from cluster
+      ansible.builtin.command: >
+        k8s kubectl get nodes
+        -o custom-columns='NAME:.metadata.name,VERSION:.status.nodeInfo.kubeletVersion'
+        --no-headers
+      register: current_node_versions
+      changed_when: false
+
+    - name: Display upgrade plan
+      ansible.builtin.debug:
+        msg:
+          - "Target channel : {{ k8s_channel if k8s_channel != '' else '(current channel — latest)' }}"
+          - "Current cluster:"
+          - "{{ current_node_versions.stdout_lines }}"
+
+    - name: Verify all nodes are Ready before starting upgrade
+      ansible.builtin.command: k8s kubectl get nodes --no-headers
+      register: preflight_nodes
+      changed_when: false
+
+    - name: Abort if any node is NotReady
+      ansible.builtin.fail:
+        msg: "Pre-flight failed — NotReady node detected. Fix the cluster before upgrading.\n{{ preflight_nodes.stdout }}"
+      when: "'NotReady' in preflight_nodes.stdout"
+
+    - name: Store channel for other plays
+      ansible.builtin.set_fact:
+        k8s_channel: "{{ k8s_channel }}"
+        cacheable: yes
+
+
+- name: Upgrade k8s control plane
+  hosts: control[0]
+  become: yes
+  vars:
+    k8s_channel: "{{ hostvars[groups['control'][0]]['k8s_channel'] }}"
+  tasks:
+    - name: Refresh k8s snap on control node (pinned channel)
+      ansible.builtin.command: snap refresh k8s --classic --channel={{ k8s_channel }}
+      when: k8s_channel != ""
+      register: snap_refresh_pinned
+      changed_when: "'already up-to-date' not in snap_refresh_pinned.stdout"
+      async: 600
+      poll: 30
+
+    - name: Refresh k8s snap on control node (current channel)
+      ansible.builtin.command: snap refresh k8s --classic
+      when: k8s_channel == ""
+      register: snap_refresh_latest
+      changed_when: >-
+        snap_refresh_latest.rc == 0 and
+        'already up-to-date' not in snap_refresh_latest.stdout and
+        'has no updates available' not in snap_refresh_latest.stdout
+      failed_when: >-
+        snap_refresh_latest.rc != 0 and
+        'has no updates available' not in snap_refresh_latest.stderr | default('')
+      async: 600
+      poll: 30
+
+    - name: Wait for control plane to be ready after upgrade
+      ansible.builtin.command: k8s status --wait-ready --timeout 120s
+      register: cp_ready
+      changed_when: false
+      retries: 8
+      delay: 15
+      until: cp_ready.rc == 0
+
+    - name: Confirm control plane snap version after upgrade
+      ansible.builtin.command: snap list k8s
+      register: cp_snap_post
+      changed_when: false
+
+    - name: Display control plane result
+      ansible.builtin.debug:
+        msg: "{{ cp_snap_post.stdout_lines }}"
+
+
+- name: Rolling upgrade of worker nodes
+  hosts: workers
+  become: yes
+  serial: 1
+  vars:
+    k8s_channel: "{{ hostvars[groups['control'][0]]['k8s_channel'] }}"
+    drain_timeout: "120s"
+    drain_grace_period: "30"
+  tasks:
+    - name: Rolling upgrade block
+      block:
+        - name: Cordon node — prevent new pod scheduling
+          ansible.builtin.command: k8s kubectl cordon {{ ansible_hostname }}
+          delegate_to: "{{ groups['control'][0] }}"
+          changed_when: true
+
+        - name: Drain node — evict pods gracefully
+          ansible.builtin.command: >
+            k8s kubectl drain {{ ansible_hostname }}
+            --ignore-daemonsets
+            --delete-emptydir-data
+            --force
+            --timeout={{ drain_timeout }}
+            --grace-period={{ drain_grace_period }}
+          delegate_to: "{{ groups['control'][0] }}"
+          changed_when: true
+
+        - name: Refresh k8s snap on worker (pinned channel)
+          ansible.builtin.command: snap refresh k8s --classic --channel={{ k8s_channel }}
+          when: k8s_channel != ""
+          register: worker_snap_refresh_pinned
+          changed_when: "'already up-to-date' not in worker_snap_refresh_pinned.stdout"
+          async: 600
+          poll: 30
+
+        - name: Refresh k8s snap on worker (current channel)
+          ansible.builtin.command: snap refresh k8s --classic
+          when: k8s_channel == ""
+          register: worker_snap_refresh_latest
+          changed_when: >-
+            worker_snap_refresh_latest.rc == 0 and
+            'already up-to-date' not in worker_snap_refresh_latest.stdout and
+            'has no updates available' not in worker_snap_refresh_latest.stdout
+          failed_when: >-
+            worker_snap_refresh_latest.rc != 0 and
+            'has no updates available' not in worker_snap_refresh_latest.stderr | default('')
+          async: 600
+          poll: 30
+
+        - name: Wait for worker node to rejoin and be Ready
+          ansible.builtin.command: >
+            k8s kubectl wait --for=condition=Ready node/{{ ansible_hostname }} --timeout=180s
+          delegate_to: "{{ groups['control'][0] }}"
+          register: worker_ready
+          changed_when: false
+          retries: 6
+          delay: 15
+          until: worker_ready.rc == 0
+
+        - name: Uncordon node — restore pod scheduling
+          ansible.builtin.command: k8s kubectl uncordon {{ ansible_hostname }}
+          delegate_to: "{{ groups['control'][0] }}"
+          changed_when: true
+
+        - name: Confirm worker snap version after upgrade
+          ansible.builtin.command: snap list k8s
+          register: worker_snap_post
+          changed_when: false
+
+        - name: Display worker upgrade result
+          ansible.builtin.debug:
+            msg: "{{ inventory_hostname }} → {{ worker_snap_post.stdout_lines }}"
+
+      rescue:
+        - name: Uncordon node on upgrade failure
+          ansible.builtin.command: k8s kubectl uncordon {{ ansible_hostname }}
+          delegate_to: "{{ groups['control'][0] }}"
+          changed_when: true
+
+        - name: Fail with context
+          ansible.builtin.fail:
+            msg: >-
+              Upgrade failed on {{ inventory_hostname }}.
+              The node has been uncordoned — investigate before retrying.
+
+
+- name: Post-upgrade cluster verification
+  hosts: control[0]
+  become: yes
+  tasks:
+    - name: Get all nodes with version info
+      ansible.builtin.command: k8s kubectl get nodes -o wide
+      register: final_nodes
+      changed_when: false
+
+    - name: Display final cluster state
+      ansible.builtin.debug:
+        msg: "{{ final_nodes.stdout_lines }}"
+
+    - name: Check all nodes are Ready
+      ansible.builtin.command: k8s kubectl get nodes --no-headers
+      register: final_status
+      changed_when: false
+
+    - name: Fail if any node is NotReady after upgrade
+      ansible.builtin.fail:
+        msg: "Post-upgrade check failed — NotReady node detected:\n{{ final_status.stdout }}"
+      when: "'NotReady' in final_status.stdout"
+
+    - name: Get kube-system pod health
+      ansible.builtin.command: k8s kubectl get pods -n kube-system
+      register: system_pods
+      changed_when: false
+
+    - name: Display system pods
+      ansible.builtin.debug:
+        msg: "{{ system_pods.stdout_lines }}"
+
+    - name: Show final snap version
+      ansible.builtin.command: snap list k8s
+      register: final_snap
+      changed_when: false
+
+    - name: Display version summary
+      ansible.builtin.debug:
+        msg: "Upgrade complete — {{ final_snap.stdout_lines }}"

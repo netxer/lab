@@ -1,0 +1,37 @@
+---
+- name: Install Canonical k8s snap on all nodes
+  hosts: all
+  become: yes
+  tasks:
+    - name: Ensure snapd is installed
+      ansible.builtin.apt:
+        name: snapd
+        state: present
+        update_cache: yes
+
+    - name: Enable and start snapd service
+      ansible.builtin.systemd:
+        name: snapd
+        enabled: yes
+        state: started
+
+    - name: Check if k8s snap is already installed
+      ansible.builtin.command: snap list k8s
+      register: k8s_snap_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install k8s snap with classic confinement
+      ansible.builtin.command: snap install k8s --classic
+      when: k8s_snap_check.rc != 0
+      async: 600
+      poll: 30
+
+    - name: Confirm k8s snap is installed
+      ansible.builtin.command: snap list k8s
+      register: snap_list
+      changed_when: false
+
+    - name: Display installed k8s snap info
+      ansible.builtin.debug:
+        msg: "{{ snap_list.stdout_lines }}"

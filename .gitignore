@@ -67,5 +67,7 @@ ansible_key*
 *.iso
 *.log
 *.ini
-*.yml
 .claud
+
+#### ignore predfined yaml files
+test-connectivity.yml

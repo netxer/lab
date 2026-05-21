@@ -1,0 +1,57 @@
+---
+# NodeNetworkConfigurationPolicy — creates VLAN-aware bridges on every lab node.
+# NMState reconciles this continuously; adding a node picks it up automatically.
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: lab-bridges
+spec:
+  nodeSelector:
+    lab-node: "true"
+  desiredState:
+    interfaces:
+      - name: br-lan
+        description: LAN segment bridge
+        type: linux-bridge
+        state: up
+        bridge:
+          options:
+            stp:
+              enabled: false
+          port: []
+        vlan:
+          mode: trunk
+          trunk-tags:
+            - id-range:
+                min: 100
+                max: 4094
+      - name: br-dmz
+        description: DMZ segment bridge
+        type: linux-bridge
+        state: up
+        bridge:
+          options:
+            stp:
+              enabled: false
+          port: []
+        vlan:
+          mode: trunk
+          trunk-tags:
+            - id-range:
+                min: 100
+                max: 4094
+      - name: br-observer
+        description: Observer / trainee access bridge
+        type: linux-bridge
+        state: up
+        bridge:
+          options:
+            stp:
+              enabled: false
+          port: []
+        vlan:
+          mode: trunk
+          trunk-tags:
+            - id-range:
+                min: 100
+                max: 4094

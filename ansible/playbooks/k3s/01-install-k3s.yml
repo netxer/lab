@@ -1,0 +1,57 @@
+---
+- name: Install k3s prerequisites on all nodes
+  hosts: all
+  become: yes
+  tasks:
+    - name: Ensure curl is installed
+      ansible.builtin.apt:
+        name: curl
+        state: present
+        update_cache: yes
+
+    - name: Disable swap (k3s requirement)
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+
+    - name: Remove swap entry from /etc/fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].*\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Load required kernel modules
+      ansible.builtin.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - overlay
+
+    - name: Persist kernel modules on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k3s.conf
+        content: |
+          br_netfilter
+          overlay
+        mode: '0644'
+
+    - name: Set required sysctl parameters
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: yes
+        state: present
+        reload: yes
+      loop:
+        - { key: net.bridge.bridge-nf-call-iptables,  value: '1' }
+        - { key: net.bridge.bridge-nf-call-ip6tables, value: '1' }
+        - { key: net.ipv4.ip_forward,                 value: '1' }
+
+    - name: Check if k3s binary is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Display installation status
+      ansible.builtin.debug:
+        msg: "k3s binary {{ 'already present — skipping download' if k3s_binary.stat.exists else 'not found — will install during bootstrap/join phase' }}"

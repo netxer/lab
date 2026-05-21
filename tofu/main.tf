@@ -165,6 +165,8 @@ resource "local_file" "ansible_playbook" {
 ########################################
 
 resource "null_resource" "transfer_ansible_files" {
+  count = var.ansible_count > 0 ? 1 : 0
+
   depends_on = [
     proxmox_virtual_environment_vm.ansible_controller,
     local_file.ansible_inventory,
@@ -176,22 +178,22 @@ resource "null_resource" "transfer_ansible_files" {
   provisioner "remote-exec" {
     inline = ["cloud-init status --wait || [ $? -eq 2 ]"]
     connection {
-      host        = proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0]
+      host        = try(proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0], "")
       user        = "ubuntu"
       private_key = tls_private_key.vm_key.private_key_pem
     }
   }
-  
+
   provisioner "local-exec" {
     command = <<-EOT
-      scp -i ${local_file.vm_private_key.filename} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${local_file.ansible_inventory.filename} ubuntu@${proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0]}:/home/ubuntu/ansible_inventory.ini
-      scp -i ${local_file.vm_private_key.filename} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${local_file.ansible_playbook.filename} ubuntu@${proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0]}:/home/ubuntu/test-connectivity.yml
+      scp -i ${local_file.vm_private_key.filename} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${local_file.ansible_inventory.filename} ubuntu@${try(proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0], "")}:/home/ubuntu/ansible_inventory.ini
+      scp -i ${local_file.vm_private_key.filename} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${local_file.ansible_playbook.filename} ubuntu@${try(proxmox_virtual_environment_vm.ansible_controller[0].ipv4_addresses[1][0], "")}:/home/ubuntu/test-connectivity.yml
     EOT
   }
 
   triggers = {
     inventory_content = local_file.ansible_inventory.content
     playbook_content  = local_file.ansible_playbook.content
-    vm_id             = proxmox_virtual_environment_vm.ansible_controller[0].id
+    vm_id             = try(proxmox_virtual_environment_vm.ansible_controller[0].id, "")
   }
 }

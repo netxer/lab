@@ -1,0 +1,63 @@
+---
+# Tears down a lab immediately (bypasses TTL) by deleting the Lab CR.
+# The Lab operator cascades deletion: namespace, NADs, VMs, PVCs, Services.
+#
+# Usage:
+#   ansible-playbook -i ../../inv/ansible_inventory.ini 05-lab-delete.yml \
+#     -e "lab_name=alice-corporate"
+- name: Delete a cyber-range lab
+  hosts: control[0]
+  become: no
+  vars_files:
+    - vars/lab.yml
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Confirm lab exists before deleting
+      ansible.builtin.command: kubectl get lab {{ lab_name }}
+      register: lab_exists
+      changed_when: false
+      failed_when: false
+
+    - name: Abort if lab not found
+      ansible.builtin.fail:
+        msg: "Lab '{{ lab_name }}' not found — nothing to delete."
+      when: lab_exists.rc != 0
+
+    - name: Show lab status before deletion
+      ansible.builtin.command: >
+        kubectl get lab {{ lab_name }}
+        -o jsonpath='Phase={.status.phase} Namespace={.status.namespace}'
+      register: pre_delete_status
+      changed_when: false
+
+    - name: Display pre-deletion state
+      ansible.builtin.debug:
+        msg: "Deleting lab {{ lab_name }} — {{ pre_delete_status.stdout }}"
+
+    - name: Delete Lab resource (cascades all sub-resources)
+      ansible.builtin.command: kubectl delete lab {{ lab_name }}
+      register: lab_delete
+
+    - name: Wait for lab namespace to be fully removed
+      ansible.builtin.shell: |
+        for i in $(seq 1 30); do
+          count=$(kubectl get labs {{ lab_name }} 2>&1 | grep -c 'not found' || true)
+          [ "$count" -gt 0 ] && echo "Deleted" && exit 0
+          sleep 5
+        done
+        echo "Timeout waiting for lab deletion"
+        exit 1
+      args:
+        executable: /bin/bash
+      register: delete_wait
+      changed_when: false
+
+    - name: Remove rendered manifest from control node
+      ansible.builtin.file:
+        path: /tmp/lab-{{ lab_name }}.yaml
+        state: absent
+
+    - name: Deletion summary
+      ansible.builtin.debug:
+        msg: "Lab '{{ lab_name }}' deleted — {{ lab_delete.stdout }}"

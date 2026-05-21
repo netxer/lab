@@ -2,7 +2,7 @@
 # Cloud config ansible controller #
 #####################
 resource "proxmox_virtual_environment_file" "ansible_controller_cloud_config" {
-  count        = 1
+  count        = var.ansible_count
   content_type = "snippets"
   datastore_id = "local"
   node_name    = "nucpve"

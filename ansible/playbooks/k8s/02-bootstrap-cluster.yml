@@ -1,0 +1,65 @@
+---
+- name: Bootstrap k8s cluster on control node
+  hosts: control[0]
+  become: yes
+  tasks:
+    - name: Check current k8s status
+      ansible.builtin.command: k8s status
+      register: k8s_status_pre
+      changed_when: false
+      failed_when: false
+
+    - name: Bootstrap the cluster
+      ansible.builtin.command: k8s bootstrap
+      when: k8s_status_pre.rc != 0 or 'not bootstrapped' in k8s_status_pre.stdout
+      async: 300
+      poll: 15
+
+    - name: Wait for cluster to become ready
+      ansible.builtin.command: k8s status --wait-ready --timeout 120s
+      changed_when: false
+      register: k8s_ready
+
+    - name: Display cluster status
+      ansible.builtin.debug:
+        msg: "{{ k8s_ready.stdout_lines }}"
+
+    - name: Enable DNS add-on
+      ansible.builtin.command: k8s enable dns
+      register: dns_result
+      changed_when: "'already enabled' not in dns_result.stdout"
+      failed_when: false
+
+    - name: Get kubeconfig
+      ansible.builtin.command: k8s config
+      register: kubeconfig
+      changed_when: false
+
+    - name: Write kubeconfig for ubuntu user
+      ansible.builtin.copy:
+        content: "{{ kubeconfig.stdout }}"
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+      vars:
+        ansible_become: yes
+      failed_when: false
+
+    - name: Ensure .kube directory exists for ubuntu user
+      ansible.builtin.file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
+      notify: write kubeconfig again
+
+  handlers:
+    - name: write kubeconfig again
+      ansible.builtin.copy:
+        content: "{{ kubeconfig.stdout }}"
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'

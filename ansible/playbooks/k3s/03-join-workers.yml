@@ -1,0 +1,83 @@
+---
+- name: Retrieve join token and server URL from control node
+  hosts: control[0]
+  become: yes
+  vars:
+    k3s_token_file: /var/lib/rancher/k3s/server/node-token
+  tasks:
+    - name: Read node-token
+      ansible.builtin.slurp:
+        src: "{{ k3s_token_file }}"
+      register: k3s_node_token_raw
+
+    - name: Store join token as fact
+      ansible.builtin.set_fact:
+        k3s_node_token: "{{ k3s_node_token_raw.content | b64decode | trim }}"
+
+    - name: Store server URL as fact
+      ansible.builtin.set_fact:
+        k3s_server_url: "https://{{ ansible_facts['default_ipv4']['address'] }}:6443"
+
+- name: Join worker nodes to the k3s cluster
+  hosts: workers
+  become: yes
+  serial: 1
+  vars:
+    k3s_node_token: "{{ hostvars[groups['control'][0]]['k3s_node_token'] }}"
+    k3s_server_url: "{{ hostvars[groups['control'][0]]['k3s_server_url'] }}"
+  tasks:
+    - name: Check if k3s agent service is already running
+      ansible.builtin.systemd:
+        name: k3s-agent
+      register: k3s_agent_pre
+      failed_when: false
+
+    - name: Install k3s agent via official install script
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | sh -
+      environment:
+        K3S_URL: "{{ k3s_server_url }}"
+        K3S_TOKEN: "{{ k3s_node_token }}"
+        INSTALL_K3S_EXEC: "agent"
+      when: k3s_agent_pre.status.ActiveState is not defined
+             or k3s_agent_pre.status.ActiveState != 'active'
+      async: 300
+      poll: 15
+
+    - name: Enable and start k3s-agent service
+      ansible.builtin.systemd:
+        name: k3s-agent
+        enabled: yes
+        state: started
+
+    - name: Check k3s-agent service status
+      ansible.builtin.systemd:
+        name: k3s-agent
+      register: k3s_agent_post
+      changed_when: false
+
+    - name: Display agent service status
+      ansible.builtin.debug:
+        msg: "k3s-agent on {{ inventory_hostname }}: {{ k3s_agent_post.status.ActiveState }}"
+
+- name: Verify all nodes visible from control plane
+  hosts: control[0]
+  become: yes
+  tasks:
+    - name: Wait for all worker nodes to become Ready
+      ansible.builtin.command: >
+        k3s kubectl wait --for=condition=Ready node --all --timeout=180s
+      register: wait_result
+      changed_when: false
+      retries: 6
+      delay: 15
+      until: wait_result.rc == 0
+
+    - name: List all cluster nodes
+      ansible.builtin.command: k3s kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+
+    - name: Display node list
+      ansible.builtin.debug:
+        msg: "{{ nodes_output.stdout_lines }}"

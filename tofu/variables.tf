@@ -30,6 +30,12 @@ variable "proxmox_node" {
   type        = string
 }
 
+variable "ansible_count" {
+  description = "Number of Ansible controller VMs to create (set to 0 if you already have a permanent controller)"
+  type        = number
+  default     = 0
+}
+
 variable "control_count" {
   description = "Number of control VMs to create"
   type        = number

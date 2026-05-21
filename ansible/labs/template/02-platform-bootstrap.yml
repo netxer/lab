@@ -1,0 +1,200 @@
+---
+# Bootstraps the KubeVirt platform on the K3s cluster.
+# Deploys HCO (KubeVirt, CDI, CNAO) + kubernetes-nmstate + NNCP bridges + NFD rules.
+# Run from the control node (needs kubectl access).
+# Usage: ansible-playbook -i ../../inv/ansible_inventory.ini 02-platform-bootstrap.yml
+#
+# K3s-specific fixes applied automatically:
+#   - Large CRDs applied with --server-side to bypass etcd annotation 262KB limit
+#   - Missing HCO CRDs (migration-operator, inflightoperations) applied explicitly
+#   - kubevirt-cluster-critical PriorityClass created before operators start
+#   - kubernetes-nmstate installed separately (not bundled in HCO)
+- name: Bootstrap KubeVirt platform (HCO + NMState + NNCP + NFD)
+  hosts: control[0]
+  become: no
+  vars_files:
+    - vars/lab.yml
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Check kubectl connectivity
+      ansible.builtin.command: kubectl get nodes
+      register: kubectl_check
+      changed_when: false
+      failed_when: kubectl_check.rc != 0
+
+    - name: Display cluster nodes
+      ansible.builtin.debug:
+        msg: "{{ kubectl_check.stdout_lines }}"
+
+    - name: Create kubevirt-hyperconverged namespace
+      ansible.builtin.shell: >
+        kubectl create namespace {{ kubevirt_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Create kubevirt-cluster-critical PriorityClass (required before any KubeVirt operator starts)
+      ansible.builtin.shell: |
+        kubectl apply --server-side --force-conflicts -f - <<'EOF'
+        apiVersion: scheduling.k8s.io/v1
+        kind: PriorityClass
+        metadata:
+          name: kubevirt-cluster-critical
+        value: 1000000000
+        globalDefault: false
+        description: Priority class for KubeVirt platform components
+        EOF
+      args:
+        executable: /bin/bash
+      register: pc_apply
+      changed_when: "'created' in pc_apply.stdout or 'configured' in pc_apply.stdout"
+
+    - name: Download HCO deploy script
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/kubevirt/hyperconverged-cluster-operator/main/deploy/deploy.sh
+        dest: /tmp/hco-deploy.sh
+        mode: '0755'
+        force: true
+
+    - name: Patch deploy script — server-side apply for large CRDs (K3s etcd 262KB annotation limit)
+      ansible.builtin.replace:
+        path: /tmp/hco-deploy.sh
+        regexp: 'kubectl apply (\$\{LABEL_SELECTOR_ARG\} )-f (https://raw.githubusercontent.com/kubevirt/hyperconverged-cluster-operator/main/deploy/crds/)'
+        replace: 'kubectl apply --server-side --force-conflicts \1-f \2'
+
+    - name: Install HCO operator via deploy script (CRDs + controller + cert-manager)
+      ansible.builtin.shell: bash /tmp/hco-deploy.sh
+      args:
+        executable: /bin/bash
+      register: hco_apply
+      changed_when: "'configured' in hco_apply.stdout or 'created' in hco_apply.stdout"
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+        IS_OPENSHIFT: "false"
+
+    - name: Apply missing HCO CRDs not included in deploy script (migration-operator, inflightoperations)
+      ansible.builtin.shell: |
+        BASE=https://raw.githubusercontent.com/kubevirt/hyperconverged-cluster-operator/main/deploy/crds
+        for crd in migration-operator00.crd.yaml inflightoperations00.crd.yaml inflightoperations01.crd.yaml; do
+          kubectl apply --server-side --force-conflicts -f $BASE/$crd 2>&1
+        done
+      args:
+        executable: /bin/bash
+      register: extra_crds
+      changed_when: "'created' in extra_crds.stdout or 'configured' in extra_crds.stdout"
+
+    - name: Wait for HCO operator pod to be ready
+      ansible.builtin.shell: |
+        kubectl wait deployment/hyperconverged-cluster-operator \
+          --for=condition=Available \
+          --timeout=300s \
+          -n {{ kubevirt_namespace }}
+      args:
+        executable: /bin/bash
+      register: hco_op_ready
+      changed_when: false
+
+    - name: Apply HyperConverged CR (triggers KubeVirt + CDI + CNAO sub-operators)
+      ansible.builtin.shell: |
+        kubectl apply -f - <<'EOF'
+        apiVersion: hco.kubevirt.io/v1beta1
+        kind: HyperConverged
+        metadata:
+          name: kubevirt-hyperconverged
+          namespace: {{ kubevirt_namespace }}
+        spec: {}
+        EOF
+      args:
+        executable: /bin/bash
+      register: hco_cr
+      changed_when: "'configured' in hco_cr.stdout or 'created' in hco_cr.stdout"
+
+    - name: Wait for HyperConverged to be Available (up to 15 min)
+      ansible.builtin.command: >
+        kubectl wait hco/kubevirt-hyperconverged
+        --for=condition=Available
+        --timeout=900s
+        -n {{ kubevirt_namespace }}
+      register: hco_ready
+      changed_when: false
+
+    - name: Install kubernetes-nmstate operator (NMState is not bundled in HCO)
+      ansible.builtin.shell: |
+        VERSION=$(curl -s https://api.github.com/repos/nmstate/kubernetes-nmstate/releases/latest \
+          | python3 -c 'import sys,json; print(json.load(sys.stdin)["tag_name"])')
+        echo "Installing kubernetes-nmstate $VERSION"
+        BASE=https://github.com/nmstate/kubernetes-nmstate/releases/download/${VERSION}
+        kubectl apply --server-side --force-conflicts -f ${BASE}/nmstate.io_nmstates.yaml
+        kubectl apply -f ${BASE}/namespace.yaml
+        kubectl apply -f ${BASE}/service_account.yaml
+        kubectl apply -f ${BASE}/role.yaml
+        kubectl apply -f ${BASE}/role_binding.yaml
+        kubectl apply --server-side --force-conflicts -f ${BASE}/operator.yaml
+        kubectl apply -f ${BASE}/nmstate.io_v1_nmstate_cr.yaml
+      args:
+        executable: /bin/bash
+      register: nmstate_install
+      changed_when: "'created' in nmstate_install.stdout"
+
+    - name: Wait for kubernetes-nmstate operator to be ready
+      ansible.builtin.shell: |
+        kubectl wait deployment/nmstate-operator \
+          --for=condition=Available \
+          --timeout=120s \
+          -n nmstate
+      args:
+        executable: /bin/bash
+      register: nmstate_ready
+      changed_when: false
+
+    - name: Copy NNCP manifest to control node
+      ansible.builtin.copy:
+        src: files/02-bridges.nncp.yaml
+        dest: /tmp/02-bridges.nncp.yaml
+        mode: '0644'
+
+    - name: Apply VLAN-aware bridge NNCP
+      ansible.builtin.command: kubectl apply -f /tmp/02-bridges.nncp.yaml
+      register: nncp_apply
+      changed_when: "'configured' in nncp_apply.stdout or 'created' in nncp_apply.stdout"
+
+    - name: Wait for bridge NNCP to reach Available state
+      ansible.builtin.shell: |
+        for i in $(seq 1 30); do
+          state=$(kubectl get nncp lab-bridges -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+          [ "$state" = "True" ] && echo "Available" && exit 0
+          sleep 10
+        done
+        echo "Timeout waiting for NNCP"
+        exit 1
+      args:
+        executable: /bin/bash
+      register: nncp_wait
+      changed_when: false
+      ignore_errors: true
+
+    - name: Copy NFD rule manifest to control node
+      ansible.builtin.copy:
+        src: files/03-nfd-rules.yaml
+        dest: /tmp/03-nfd-rules.yaml
+        mode: '0644'
+
+    - name: Apply NodeFeatureRule for KVM-capable nodes
+      ansible.builtin.command: kubectl apply --server-side --force-conflicts -f /tmp/03-nfd-rules.yaml
+      register: nfd_apply
+      changed_when: "'configured' in nfd_apply.stdout or 'created' in nfd_apply.stdout"
+
+    - name: Show lab-node labels
+      ansible.builtin.command: kubectl get nodes -L lab-node
+      register: node_labels
+      changed_when: false
+
+    - name: Platform bootstrap summary
+      ansible.builtin.debug:
+        msg:
+          - "HCO:    {{ hco_ready.stdout }}"
+          - "NMState: {{ 'ready' if nmstate_ready.rc == 0 else 'not ready' }}"
+          - "NNCP:   {{ nncp_wait.stdout }}"
+          - "NFD:    {{ nfd_apply.stdout if nfd_apply.changed else 'unchanged' }}"
+          - "Nodes:  {{ node_labels.stdout_lines }}"

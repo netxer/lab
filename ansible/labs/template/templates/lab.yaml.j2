@@ -1,0 +1,14 @@
+---
+apiVersion: cyberrange.example.io/v1
+kind: Lab
+metadata:
+  name: {{ lab_name }}
+spec:
+  scenario: {{ lab_scenario }}
+  trainee:
+    name: {{ trainee_name }}
+    sshPubKey: "{{ trainee_ssh_pub_key }}"
+  ttl: {{ lab_ttl }}
+  resources:
+    cpu: {{ lab_cpu }}
+    memory: {{ lab_memory }}

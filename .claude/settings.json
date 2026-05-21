@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(snap install *)",
+      "Bash(curl -Ls https://dl.k8s.io/release/stable.txt)",
+      "Bash(curl -LO \"https://dl.k8s.io/release/$\\(curl -Ls https://dl.k8s.io/release/stable.txt\\)/bin/linux/amd64/kubectl\")",
+      "Bash(install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl)",
+      "Bash(mkdir -p /root/.kube)",
+      "Bash(sed 's|https://127.0.0.1:6443|https://192.168.4.123:6443|g' /tmp/k8s-kubeconfig.yaml)",
+      "Bash(chmod 600 /root/.kube/config)",
+      "Bash(grep -n \"alias kube\" /root/.bashrc)",
+      "Read(//root/**)",
+      "Bash(echo \"alias kube='kubectl'\" >> /root/.bashrc && echo \"alias added\")",
+      "Bash(kubectl get *)",
+      "Bash(kubectl cluster-info *)",
+      "Bash(*)"
+    ],
+    "additionalDirectories": [
+      "/root"
+    ]
+  }
+}
