@@ -40,6 +40,7 @@ autoinstall:
     - unzip
     - nfs-common
     - tree
+    - network-manager
   package_update: true
   package_upgrade: true
   late-commands:
@@ -47,4 +48,6 @@ autoinstall:
     # Disable swap
     - curtin in-target -- swapoff -a
     - curtin in-target -- sed -i '/ swap / s/^/#/' /etc/fstab
+    # KVM + vhost kernel modules — required for KubeVirt nested virtualisation
+    - "echo -e 'kvm\nkvm_intel\nkvm_amd\nvhost_net' > /target/etc/modules-load.d/kvm.conf"
    

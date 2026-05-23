@@ -1,0 +1,86 @@
+---
+# Deploys the lab-operator (kopf CRD controller) into the K3s cluster.
+# The operator watches Lab CRDs and materialises namespaces, NADs, VMs, and Services.
+#
+# Prerequisites:
+#   - Phase 2 complete: HCO + KubeVirt CRDs are installed
+#   - The operator image must be built and pushed to lab_operator_image before running this.
+#
+# Build the image (run once or after handler.py changes):
+#   cd lab/lab-operator
+#   docker build -t registry.lab.local/lab-operator:v0.1.0 .
+#   docker push    registry.lab.local/lab-operator:v0.1.0
+#
+# Usage:
+#   ansible-playbook -i ../../inv/ansible_inventory.ini 02b-operator-deploy.yml
+#   ansible-playbook -i ../../inv/ansible_inventory.ini 02b-operator-deploy.yml \
+#     -e "lab_operator_image=registry.lab.local/lab-operator:v0.2.0"
+- name: Deploy lab-operator into the cluster
+  hosts: control[0]
+  become: no
+  vars_files:
+    - vars/lab.yml
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Check kubectl connectivity
+      ansible.builtin.command: kubectl get nodes
+      register: kubectl_check
+      changed_when: false
+      failed_when: kubectl_check.rc != 0
+
+    - name: Check if lab-operator is already deployed
+      ansible.builtin.command: >
+        kubectl get deployment lab-operator -n lab-operator-system
+      register: operator_exists
+      changed_when: false
+      failed_when: false
+
+    - name: Copy operator deployment manifest to control node
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../../../lab/lab-operator/deploy/deployment.yaml"
+        dest: /tmp/lab-operator-deployment.yaml
+        mode: '0644'
+
+    - name: Patch image reference in deployment manifest
+      ansible.builtin.replace:
+        path: /tmp/lab-operator-deployment.yaml
+        regexp: 'image: registry\.lab\.local/lab-operator:[^\s]+'
+        replace: "image: {{ lab_operator_image }}"
+      when: lab_operator_image != "registry.lab.local/lab-operator:v0.1.0"
+
+    - name: Create lab-operator-system namespace
+      ansible.builtin.shell: >
+        kubectl create namespace lab-operator-system --dry-run=client -o yaml | kubectl apply -f -
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Apply lab-operator Deployment
+      ansible.builtin.command: kubectl apply -f /tmp/lab-operator-deployment.yaml
+      register: operator_apply
+      changed_when: "'created' in operator_apply.stdout or 'configured' in operator_apply.stdout"
+
+    - name: Wait for lab-operator pod to be ready
+      ansible.builtin.shell: |
+        kubectl wait deployment/lab-operator \
+          --for=condition=Available \
+          --timeout=120s \
+          -n lab-operator-system
+      args:
+        executable: /bin/bash
+      register: operator_ready
+      changed_when: false
+
+    - name: Show lab-operator pod status
+      ansible.builtin.command: >
+        kubectl get pods -n lab-operator-system -l app=lab-operator
+      register: operator_pods
+      changed_when: false
+
+    - name: Operator deploy summary
+      ansible.builtin.debug:
+        msg:
+          - "lab-operator: {{ operator_apply.stdout if operator_apply.changed else 'unchanged' }}"
+          - "Status:       {{ operator_ready.stdout }}"
+          - "Pods:         {{ operator_pods.stdout_lines }}"

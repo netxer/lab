@@ -1,0 +1,62 @@
+# =============================================================================
+# Lab Operator deployment
+#
+# RBAC lives in the lab-crd repo (rbac/operator-rbac.yaml). Apply that first.
+# This Deployment assumes the ServiceAccount `lab-operator` exists in the
+# `lab-operator-system` namespace.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab-operator-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab-operator
+  namespace: lab-operator-system
+  labels:
+    app: lab-operator
+spec:
+  replicas: 1     # singleton; uses leader-election lease for HA if scaled
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lab-operator
+  template:
+    metadata:
+      labels:
+        app: lab-operator
+    spec:
+      serviceAccountName: lab-operator
+      containers:
+        - name: operator
+          image: registry.lab.local/lab-operator:v0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LAB_REGISTRY
+              value: "registry.lab.local"
+            - name: LAB_IMAGE_TAG
+              value: "v1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10

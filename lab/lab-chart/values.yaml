@@ -9,8 +9,11 @@
 trainee:
   name: alice                 # used in resource names and AD username
   sshPubKey: ""               # required: paste public key string
+  vncPassword: "kalilab1"     # VNC password for the trainee desktop (min 6 chars)
+  image: ""                   # override full image ref (e.g. quay.io/containerdisks/ubuntu:22.04); falls back to registry/vm-disks/trainee:imageTag
   cpu: 4
   memory: 8Gi
+  diskSize: 10Gi
 
 # How long the lab lives before kube-janitor sweeps it
 ttl: 4h

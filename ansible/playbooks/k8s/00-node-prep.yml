@@ -1,0 +1,135 @@
+---
+# Prepares every node for KubeVirt nested virtualisation.
+# Must run on all K8s nodes (control + workers) before cluster installation.
+# Usage: ansible-playbook -i ../inv/ansible_inventory.ini 00-node-prep.yml
+- name: Prepare nodes for KubeVirt (KVM + nested virt)
+  hosts: all
+  become: yes
+  tasks:
+    - name: Check /proc/cpuinfo for VMX (Intel) or SVM (AMD) flags
+      ansible.builtin.shell: egrep -c '(vmx|svm)' /proc/cpuinfo
+      register: kvm_flag_count
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if no KVM capability detected
+      ansible.builtin.fail:
+        msg: >
+          Node {{ inventory_hostname }} has no vmx/svm CPU flags.
+          Enable nested virtualisation in Proxmox:
+            - Set cpu: host on the VM
+            - Pass -cpu host,+vmx (Intel) or +svm (AMD) in vm args
+            - Verify /sys/module/kvm_intel/parameters/nested == Y on the Proxmox host
+      when: kvm_flag_count.stdout | int == 0
+
+    - name: Load kvm-intel module (Intel hosts)
+      community.general.modprobe:
+        name: kvm_intel
+        state: present
+      when: "'vmx' in ansible_facts.get('processor', [])|join(' ') or kvm_flag_count.rc == 0"
+      ignore_errors: true
+
+    - name: Load kvm-amd module (AMD hosts)
+      community.general.modprobe:
+        name: kvm_amd
+        state: present
+      when: "'svm' in ansible_facts.get('processor', [])|join(' ')"
+      ignore_errors: true
+
+    - name: Persist KVM module load across reboots
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/kvm.conf
+        content: |
+          kvm
+          kvm_intel
+          kvm_amd
+        mode: '0644'
+
+    - name: Verify /dev/kvm exists
+      ansible.builtin.stat:
+        path: /dev/kvm
+      register: kvm_dev
+
+    - name: Fail if /dev/kvm is missing after module load
+      ansible.builtin.fail:
+        msg: "/dev/kvm not found on {{ inventory_hostname }} — KubeVirt VMs will not schedule here."
+      when: not kvm_dev.stat.exists
+
+    - name: Ensure vhost-net is loaded (better VM network throughput)
+      community.general.modprobe:
+        name: vhost_net
+        state: present
+
+    - name: Persist vhost-net module load
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/vhost.conf
+        content: "vhost_net\n"
+        mode: '0644'
+
+    - name: Install NetworkManager (required by kubernetes-nmstate handler)
+      ansible.builtin.apt:
+        name: network-manager
+        state: present
+        update_cache: yes
+      register: nm_install
+
+    - name: Enable and start NetworkManager
+      ansible.builtin.systemd:
+        name: NetworkManager
+        enabled: yes
+        state: started
+
+    # -------------------------------------------------------------------
+    - name: Create lab bridge interfaces
+      ansible.builtin.shell: |
+        ip link show {{ item }} &>/dev/null || (ip link add name {{ item }} type bridge && ip link set {{ item }} up && echo "created {{ item }}")
+      args:
+        executable: /bin/bash
+      loop:
+        - br-lan
+        - br-dmz
+        - br-observer
+      when: inventory_hostname in groups['workers']
+      changed_when: "'created' in __bridge_result.stdout"
+      register: __bridge_result
+
+    - name: Persist lab bridges via systemd-networkd netdev files
+      ansible.builtin.copy:
+        dest: "/etc/systemd/network/10-{{ item }}.netdev"
+        content: |
+          [NetDev]
+          Name={{ item }}
+          Kind=bridge
+        mode: '0644'
+      loop:
+        - br-lan
+        - br-dmz
+        - br-observer
+      when: inventory_hostname in groups['workers']
+      register: __netdev_files
+
+    - name: Persist lab bridges via systemd-networkd network files
+      ansible.builtin.copy:
+        dest: "/etc/systemd/network/10-{{ item }}.network"
+        content: |
+          [Match]
+          Name={{ item }}
+          [Network]
+          LinkLocalAddressing=no
+          ConfigureWithoutCarrier=yes
+        mode: '0644'
+      loop:
+        - br-lan
+        - br-dmz
+        - br-observer
+      when: inventory_hostname in groups['workers']
+
+    - name: Reload systemd-networkd to pick up new bridge config
+      ansible.builtin.systemd:
+        name: systemd-networkd
+        state: reloaded
+      when: inventory_hostname in groups['workers'] and __netdev_files.changed
+
+    - name: Report KVM readiness
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} — /dev/kvm present, KVM flags={{ kvm_flag_count.stdout }}, NetworkManager={{ 'installed' if nm_install.changed else 'already present' }}"

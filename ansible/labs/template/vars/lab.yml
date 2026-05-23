@@ -31,3 +31,8 @@ host_uplink: "eth1"                   # adjust to match your node NIC name
 
 # HCO deploy branch/tag — "main" always pulls latest stable deploy script
 hco_branch: "main"
+
+# Lab operator image (build with: cd lab/lab-operator && docker build -t <image> . && docker push <image>)
+lab_operator_image: "registry.lab.local/lab-operator:v0.1.0"
+lab_registry: "registry.lab.local"
+lab_image_tag: "v1"

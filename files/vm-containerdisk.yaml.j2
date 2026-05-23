@@ -1,0 +1,91 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {{ VM.name }}
+  namespace: {{ Lab.Namespace }}
+  labels:
+    app: lab
+    lab.trainee: {{ Trainee.Name }}
+    lab.role: {{ VM.role }}
+    lab.vm: {{ VM.name }}
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        app: lab
+        lab.trainee: {{ Trainee.Name }}
+        lab.role: {{ VM.role }}
+        lab.vm: {{ VM.name }}
+        kubevirt.io/vm: {{ VM.name }}
+    spec:
+      nodeSelector:
+        {% for k, v in NodeSelector.items() %}
+        {{ k }}: "{{ v }}"
+        {% endfor %}
+      domain:
+        cpu:
+          cores: {{ VMResources.cpu }}
+        memory:
+          guest: {{ VMResources.memory }}
+        {% if VM.firmware and (VM.firmware.uefi or VM.firmware.secureBoot or VM.firmware.tpm) %}
+        features:
+          acpi: {}
+          {% if VM.firmware.secureBoot %}
+          smm: {}
+          {% endif %}
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: {{ 'true' if VM.firmware.secureBoot else 'false' }}
+        {% endif %}
+        devices:
+          {% if VM.firmware and VM.firmware.tpm %}
+          tpm: {}
+          {% endif %}
+          disks:
+            - name: osdisk
+              disk:
+                bus: virtio
+            {% if RenderedCloudInit.userData or RenderedCloudInit.networkData %}
+            - name: cloudinit
+              disk:
+                bus: virtio
+            {% endif %}
+          interfaces:
+            {% for iface in VM.interfaces %}
+            - name: {{ iface.name }}
+              {% if iface.type == 'pod' %}
+              {% if iface.masquerade %}masquerade: {}{% else %}bridge: {}{% endif %}
+              {% else %}
+              bridge: {}
+              {% endif %}
+              model: virtio
+            {% endfor %}
+      networks:
+        {% for iface in VM.interfaces %}
+        - name: {{ iface.name }}
+          {% if iface.type == 'pod' %}
+          pod: {}
+          {% else %}
+          multus:
+            {% if iface.defaultRoute %}default: true{% endif %}
+            networkName: lab-{{ iface.network }}
+          {% endif %}
+        {% endfor %}
+      volumes:
+        - name: osdisk
+          containerDisk:
+            image: {{ VM.image }}
+        {% if RenderedCloudInit.userData or RenderedCloudInit.networkData %}
+        - name: cloudinit
+          cloudInitNoCloud:
+            {% if RenderedCloudInit.userData %}
+            userData: |
+              {{ RenderedCloudInit.userData | indent(14) }}
+            {% endif %}
+            {% if RenderedCloudInit.networkData %}
+            networkData: |
+              {{ RenderedCloudInit.networkData | indent(14) }}
+            {% endif %}
+        {% endif %}

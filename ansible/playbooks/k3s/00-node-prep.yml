@@ -1,0 +1,184 @@
+---
+# Prepares every node for KubeVirt nested virtualisation.
+# Must run on all K3s nodes (control + workers) before cluster installation.
+# Usage: ansible-playbook -i ../inv/ansible_inventory.ini 00-node-prep.yml
+- name: Prepare nodes for KubeVirt (KVM + nested virt)
+  hosts: all
+  become: yes
+  tasks:
+    - name: Check /proc/cpuinfo for VMX (Intel) or SVM (AMD) flags
+      ansible.builtin.shell: egrep -c '(vmx|svm)' /proc/cpuinfo
+      register: kvm_flag_count
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if no KVM capability detected
+      ansible.builtin.fail:
+        msg: >
+          Node {{ inventory_hostname }} has no vmx/svm CPU flags.
+          Enable nested virtualisation in Proxmox:
+            - Set cpu: host on the VM
+            - Pass -cpu host,+vmx (Intel) or +svm (AMD) in vm args
+            - Verify /sys/module/kvm_intel/parameters/nested == Y on the Proxmox host
+      when: kvm_flag_count.stdout | int == 0
+
+    - name: Load kvm-intel module (Intel hosts)
+      community.general.modprobe:
+        name: kvm_intel
+        state: present
+      when: "'vmx' in ansible_facts.get('processor', [])|join(' ') or kvm_flag_count.rc == 0"
+      ignore_errors: true
+
+    - name: Load kvm-amd module (AMD hosts)
+      community.general.modprobe:
+        name: kvm_amd
+        state: present
+      when: "'svm' in ansible_facts.get('processor', [])|join(' ')"
+      ignore_errors: true
+
+    - name: Persist KVM module load across reboots
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/kvm.conf
+        content: |
+          kvm
+          kvm_intel
+          kvm_amd
+        mode: '0644'
+
+    - name: Verify /dev/kvm exists
+      ansible.builtin.stat:
+        path: /dev/kvm
+      register: kvm_dev
+
+    - name: Fail if /dev/kvm is missing after module load
+      ansible.builtin.fail:
+        msg: "/dev/kvm not found on {{ inventory_hostname }} — KubeVirt VMs will not schedule here."
+      when: not kvm_dev.stat.exists
+
+    - name: Ensure vhost-net is loaded (better VM network throughput)
+      community.general.modprobe:
+        name: vhost_net
+        state: present
+
+    - name: Persist vhost-net module load
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/vhost.conf
+        content: "vhost_net\n"
+        mode: '0644'
+
+    - name: Install NetworkManager (required by kubernetes-nmstate handler)
+      ansible.builtin.apt:
+        name: network-manager
+        state: present
+        update_cache: yes
+      register: nm_install
+
+    - name: Enable and start NetworkManager
+      ansible.builtin.systemd:
+        name: NetworkManager
+        enabled: yes
+        state: started
+
+    # -------------------------------------------------------------------
+    # K3s + Multus CNI fix: K3s stores CNI plugins and config in non-standard
+    # paths. Multus DaemonSet writes to /etc/cni/net.d (standard) and looks
+    # for plugins in /opt/cni/bin, but K3s agents use their own paths.
+    # Fix: symlink /etc/cni/net.d -> K3s agent path so Multus config lands
+    # where K3s reads it. Then copy K3s built-in CNI binaries to /opt/cni/bin
+    # so Multus daemon can find flannel/portmap/bandwidth when delegating.
+    - name: Symlink /etc/cni/net.d to K3s agent CNI config path (Multus fix)
+      ansible.builtin.shell: |
+        K3S_CNI=/var/lib/rancher/k3s/agent/etc/cni/net.d
+        if [ -d /etc/cni/net.d ] && [ ! -L /etc/cni/net.d ]; then
+          cp -f /etc/cni/net.d/* $K3S_CNI/ 2>/dev/null || true
+          rm -rf /etc/cni/net.d
+        fi
+        ln -sfn $K3S_CNI /etc/cni/net.d
+        echo "linked"
+      args:
+        executable: /bin/bash
+      when: inventory_hostname in groups['workers']
+      register: __cni_symlink
+      changed_when: "'linked' in __cni_symlink.stdout"
+
+    - name: Copy K3s CNI multi-call binary to /opt/cni/bin for Multus delegation
+      ansible.builtin.shell: |
+        K3S_REAL=$(readlink -f /var/lib/rancher/k3s/data/cni/flannel)
+        for plugin in flannel portmap bandwidth host-local loopback; do
+          if [ ! -f /opt/cni/bin/$plugin ] || [ "$(md5sum /opt/cni/bin/$plugin | cut -d' ' -f1)" != "$(md5sum $K3S_REAL | cut -d' ' -f1)" ]; then
+            cp "$K3S_REAL" /opt/cni/bin/$plugin
+            chmod +x /opt/cni/bin/$plugin
+            echo "copied $plugin"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      when: inventory_hostname in groups['workers']
+      register: __cni_copy
+      changed_when: "__cni_copy.stdout | length > 0"
+
+    - name: Symlink CNAO CNI plugins into K3s CNI data dir (so K3s containerd finds them)
+      ansible.builtin.shell: |
+        K3S_CNI=/var/lib/rancher/k3s/data/cni
+        for plugin in multus-shim cnv-bridge cnv-tuning passthru tuning; do
+          [ -f /opt/cni/bin/$plugin ] && ln -sfn /opt/cni/bin/$plugin $K3S_CNI/$plugin && echo "linked $plugin"
+        done
+      args:
+        executable: /bin/bash
+      when: inventory_hostname in groups['workers']
+      changed_when: false
+
+    # -------------------------------------------------------------------
+    - name: Create lab bridge interfaces (bypass NMState — systemd-networkd owns the stack)
+      ansible.builtin.shell: |
+        ip link show {{ item }} &>/dev/null || (ip link add name {{ item }} type bridge && ip link set {{ item }} up && echo "created {{ item }}")
+      args:
+        executable: /bin/bash
+      loop:
+        - br-lan
+        - br-dmz
+        - br-observer
+      when: inventory_hostname in groups['workers']
+      changed_when: "'created' in __bridge_result.stdout"
+      register: __bridge_result
+
+    - name: Persist lab bridges via systemd-networkd netdev files
+      ansible.builtin.copy:
+        dest: "/etc/systemd/network/10-{{ item }}.netdev"
+        content: |
+          [NetDev]
+          Name={{ item }}
+          Kind=bridge
+        mode: '0644'
+      loop:
+        - br-lan
+        - br-dmz
+        - br-observer
+      when: inventory_hostname in groups['workers']
+      register: __netdev_files
+
+    - name: Persist lab bridges via systemd-networkd network files
+      ansible.builtin.copy:
+        dest: "/etc/systemd/network/10-{{ item }}.network"
+        content: |
+          [Match]
+          Name={{ item }}
+          [Network]
+          LinkLocalAddressing=no
+          ConfigureWithoutCarrier=yes
+        mode: '0644'
+      loop:
+        - br-lan
+        - br-dmz
+        - br-observer
+      when: inventory_hostname in groups['workers']
+
+    - name: Reload systemd-networkd to pick up new bridge config
+      ansible.builtin.systemd:
+        name: systemd-networkd
+        state: reloaded
+      when: inventory_hostname in groups['workers'] and __netdev_files.changed
+
+    - name: Report KVM readiness
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} — /dev/kvm present, KVM flags={{ kvm_flag_count.stdout }}, NetworkManager={{ 'installed' if nm_install.changed else 'already present' }}"

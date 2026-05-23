@@ -21,6 +21,18 @@ metadata:
     role: trainee
 spec:
   running: true
+  dataVolumeTemplates:
+    - metadata:
+        name: trainee-{{ .Values.trainee.name }}-osdisk
+      spec:
+        pvc:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: {{ .Values.trainee.diskSize | default "10Gi" }}
+        source:
+          registry:
+            url: "docker://{{ .Values.trainee.image | default (printf "%s/vm-disks/trainee:%s" .Values.registry .Values.imageTag) }}"
   template:
     metadata:
       labels:
@@ -58,9 +70,8 @@ spec:
           pod: {}
       volumes:
         - name: osdisk
-          containerDisk:
-            # Pre-built Ubuntu/Kali image with whatever tooling the lab needs
-            image: {{ .Values.registry }}/vm-disks/trainee:{{ .Values.imageTag }}
+          dataVolume:
+            name: trainee-{{ .Values.trainee.name }}-osdisk
         - name: cloudinit
           cloudInitNoCloud:
             networkData: |
@@ -93,6 +104,29 @@ spec:
                   content: |
                     net.ipv4.ip_forward=0
                     net.ipv6.conf.all.forwarding=0
+                - path: /etc/systemd/system/vncserver@.service
+                  content: |
+                    [Unit]
+                    Description=TigerVNC server :%i
+                    After=syslog.target network.target
+                    [Service]
+                    Type=forking
+                    User={{ .Values.trainee.name }}
+                    PAMName=login
+                    PIDFile=/home/{{ .Values.trainee.name }}/.vnc/%H:%i.pid
+                    ExecStartPre=/bin/sh -c '/usr/bin/vncserver -kill :%i > /dev/null 2>&1 || :'
+                    ExecStart=/usr/bin/vncserver :%i -geometry 1920x1080 -depth 24 -localhost no
+                    ExecStop=/usr/bin/vncserver -kill :%i
+                    Restart=on-failure
+                    [Install]
+                    WantedBy=multi-user.target
               runcmd:
                 - sysctl -p /etc/sysctl.d/99-no-forward.conf
+                - apt-get update -qq
+                - DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies tigervnc-standalone-server dbus-x11
+                - su - {{ .Values.trainee.name }} -c 'mkdir -p ~/.vnc && echo "{{ .Values.trainee.vncPassword | default "kalilab1" }}" | vncpasswd -f > ~/.vnc/passwd && chmod 600 ~/.vnc/passwd'
+                - su - {{ .Values.trainee.name }} -c 'echo "#!/bin/sh\nexec startxfce4" > ~/.vnc/xstartup && chmod +x ~/.vnc/xstartup'
+                - systemctl daemon-reload
+                - systemctl enable vncserver@1.service
+                - systemctl start vncserver@1.service
 {{- end }}

@@ -1,0 +1,99 @@
+---
+- name: Deploy Prometheus and Grafana monitoring stack
+  hosts: control[0]
+  become: yes
+  vars:
+    monitoring_namespace: monitoring
+    grafana_nodeport: 30080
+    prometheus_nodeport: 30090
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+  tasks:
+    - name: Check if helm is installed
+      ansible.builtin.command: helm version --short
+      register: helm_check
+      changed_when: false
+      failed_when: false
+
+    - name: Download Helm install script
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get-helm-3.sh
+        mode: '0755'
+      when: helm_check.rc != 0
+
+    - name: Install Helm
+      ansible.builtin.command: /tmp/get-helm-3.sh
+      when: helm_check.rc != 0
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+
+    - name: Add prometheus-community Helm repo
+      ansible.builtin.command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+      register: repo_add
+      changed_when: "'already exists' not in repo_add.stdout"
+      failed_when: false
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+
+    - name: Update Helm repos
+      ansible.builtin.command: helm repo update
+      changed_when: false
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+
+    - name: Create monitoring namespace
+      ansible.builtin.command: k3s kubectl create namespace {{ monitoring_namespace }}
+      register: ns_create
+      changed_when: ns_create.rc == 0
+      failed_when: ns_create.rc != 0 and 'already exists' not in ns_create.stderr
+
+    - name: Deploy kube-prometheus-stack via Helm
+      ansible.builtin.command: >
+        helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack
+        --namespace {{ monitoring_namespace }}
+        --set grafana.service.type=NodePort
+        --set grafana.service.nodePort={{ grafana_nodeport }}
+        --set prometheus.service.type=NodePort
+        --set prometheus.service.nodePort={{ prometheus_nodeport }}
+        --set grafana.adminPassword=admin
+        --timeout 10m
+        --wait
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      async: 660
+      poll: 30
+
+    - name: Wait for all monitoring pods to be ready
+      ansible.builtin.command: >
+        k3s kubectl wait --for=condition=Ready pod --all
+        -n {{ monitoring_namespace }} --timeout=300s
+      changed_when: false
+      retries: 3
+      delay: 10
+      register: pods_ready
+      until: pods_ready.rc == 0
+
+    - name: Get monitoring pods
+      ansible.builtin.command: k3s kubectl get pods -n {{ monitoring_namespace }}
+      register: monitoring_pods
+      changed_when: false
+
+    - name: Display monitoring pods
+      ansible.builtin.debug:
+        msg: "{{ monitoring_pods.stdout_lines }}"
+
+    - name: Get monitoring services
+      ansible.builtin.command: k3s kubectl get services -n {{ monitoring_namespace }}
+      register: monitoring_svc
+      changed_when: false
+
+    - name: Display monitoring services
+      ansible.builtin.debug:
+        msg: "{{ monitoring_svc.stdout_lines }}"
+
+    - name: Display access URLs
+      ansible.builtin.debug:
+        msg:
+          - "Grafana    → http://{{ ansible_facts['default_ipv4']['address'] }}:{{ grafana_nodeport }}"
+          - "Prometheus → http://{{ ansible_facts['default_ipv4']['address'] }}:{{ prometheus_nodeport }}"
+          - "Grafana credentials: admin / admin  (change after first login)"

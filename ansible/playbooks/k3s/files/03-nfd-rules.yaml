@@ -1,0 +1,33 @@
+---
+# NodeFeatureRule — labels nodes that expose /dev/kvm (vmx or svm in cpuinfo)
+# so KubeVirt VMIs only schedule on KVM-capable hosts.
+apiVersion: nfd.k8s-sigs.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: lab-node-kvm
+  namespace: node-feature-discovery
+spec:
+  rules:
+    - name: kvm-capable
+      labels:
+        lab-node: "true"
+      matchFeatures:
+        - feature: kernel.loadedmodule
+          matchExpressions:
+            kvm_intel:
+              op: Exists
+        - feature: kernel.loadedmodule
+          matchExpressions:
+            kvm_amd:
+              op: Exists
+      matchAny:
+        - matchFeatures:
+            - feature: kernel.loadedmodule
+              matchExpressions:
+                kvm_intel:
+                  op: Exists
+        - matchFeatures:
+            - feature: kernel.loadedmodule
+              matchExpressions:
+                kvm_amd:
+                  op: Exists

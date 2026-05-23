@@ -2,7 +2,7 @@
 # Bootstraps the KubeVirt platform on the K3s cluster.
 # Deploys HCO (KubeVirt, CDI, CNAO) + kubernetes-nmstate + NNCP bridges + NFD rules.
 # Run from the control node (needs kubectl access).
-# Usage: ansible-playbook -i ../../inv/ansible_inventory.ini 02-platform-bootstrap.yml
+# Usage: ansible-playbook -i ../inv/ansible_inventory.ini 05-platform-bootstrap.yml
 #
 # K3s-specific fixes applied automatically:
 #   - Large CRDs applied with --server-side to bypass etcd annotation 262KB limit
@@ -12,8 +12,9 @@
 - name: Bootstrap KubeVirt platform (HCO + NMState + NNCP + NFD)
   hosts: control[0]
   become: no
-  vars_files:
-    - vars/lab.yml
+  vars:
+    kubeconfig: "{{ kubeconfig | default('/etc/rancher/k3s/k3s.yaml') }}"
+    kubevirt_namespace: "{{ kubevirt_namespace | default('kubevirt-hyperconverged') }}"
   environment:
     KUBECONFIG: "{{ kubeconfig }}"
   tasks:
@@ -50,28 +51,37 @@
       register: pc_apply
       changed_when: "'created' in pc_apply.stdout or 'configured' in pc_apply.stdout"
 
+    - name: Check if HCO operator is already deployed
+      ansible.builtin.command: kubectl get deployment hyperconverged-cluster-operator -n {{ kubevirt_namespace }}
+      register: hco_exists
+      changed_when: false
+      failed_when: false
+
     - name: Download HCO deploy script
       ansible.builtin.get_url:
         url: https://raw.githubusercontent.com/kubevirt/hyperconverged-cluster-operator/main/deploy/deploy.sh
         dest: /tmp/hco-deploy.sh
         mode: '0755'
         force: true
+      when: hco_exists.rc != 0
 
     - name: Patch deploy script — server-side apply for large CRDs (K3s etcd 262KB annotation limit)
       ansible.builtin.replace:
         path: /tmp/hco-deploy.sh
         regexp: 'kubectl apply (\$\{LABEL_SELECTOR_ARG\} )-f (https://raw.githubusercontent.com/kubevirt/hyperconverged-cluster-operator/main/deploy/crds/)'
         replace: 'kubectl apply --server-side --force-conflicts \1-f \2'
+      when: hco_exists.rc != 0
 
     - name: Install HCO operator via deploy script (CRDs + controller + cert-manager)
       ansible.builtin.shell: bash /tmp/hco-deploy.sh
       args:
         executable: /bin/bash
       register: hco_apply
-      changed_when: "'configured' in hco_apply.stdout or 'created' in hco_apply.stdout"
+      changed_when: "'created' in hco_apply.stdout"
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
         IS_OPENSHIFT: "false"
+      when: hco_exists.rc != 0
 
     - name: Apply missing HCO CRDs not included in deploy script (migration-operator, inflightoperations)
       ansible.builtin.shell: |
@@ -82,7 +92,8 @@
       args:
         executable: /bin/bash
       register: extra_crds
-      changed_when: "'created' in extra_crds.stdout or 'configured' in extra_crds.stdout"
+      changed_when: "'created' in extra_crds.stdout"
+      when: hco_exists.rc != 0
 
     - name: Wait for HCO operator pod to be ready
       ansible.builtin.shell: |
@@ -159,20 +170,36 @@
       register: nncp_apply
       changed_when: "'configured' in nncp_apply.stdout or 'created' in nncp_apply.stdout"
 
-    - name: Wait for bridge NNCP to reach Available state
+    - name: Check NNCP availability (non-blocking — requires NetworkManager on nodes)
       ansible.builtin.shell: |
-        for i in $(seq 1 30); do
-          state=$(kubectl get nncp lab-bridges -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
-          [ "$state" = "True" ] && echo "Available" && exit 0
-          sleep 10
-        done
-        echo "Timeout waiting for NNCP"
-        exit 1
+        state=$(kubectl get nncp lab-bridges -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        [ "$state" = "True" ] && echo "Available" || echo "Pending (install network-manager on nodes to activate)"
       args:
         executable: /bin/bash
       register: nncp_wait
       changed_when: false
-      ignore_errors: true
+
+    - name: Install Node Feature Discovery via kustomize
+      ansible.builtin.shell: |
+        VERSION=$(curl -s https://api.github.com/repos/kubernetes-sigs/node-feature-discovery/releases/latest \
+          | python3 -c 'import sys,json; print(json.load(sys.stdin)["tag_name"])')
+        echo "Installing NFD $VERSION"
+        kubectl apply --server-side --force-conflicts -k \
+          https://github.com/kubernetes-sigs/node-feature-discovery/deployment/overlays/default?ref=${VERSION}
+      args:
+        executable: /bin/bash
+      register: nfd_install
+      changed_when: "'created' in nfd_install.stdout"
+
+    - name: Wait for NFD master to be ready
+      ansible.builtin.shell: |
+        kubectl wait deployment/nfd-master \
+          --for=condition=Available \
+          --timeout=180s \
+          -n node-feature-discovery 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: false
 
     - name: Copy NFD rule manifest to control node
       ansible.builtin.copy:

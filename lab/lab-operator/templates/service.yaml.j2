@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ Endpoint.name }}
+  namespace: {{ Lab.Namespace }}
+  labels:
+    app: lab
+    lab.trainee: {{ Trainee.Name }}
+    lab.endpoint: {{ Endpoint.name }}
+spec:
+  type: NodePort
+  selector:
+    lab.vm: {{ Endpoint.vmName }}
+  ports:
+    - name: {{ Endpoint.name }}
+      protocol: TCP
+      port: {{ Endpoint.port }}
+      targetPort: {{ Endpoint.port }}
+      {% if Endpoint.nodePort is defined %}
+      nodePort: {{ Endpoint.nodePort }}
+      {% endif %}

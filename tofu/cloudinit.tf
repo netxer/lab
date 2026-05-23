@@ -37,6 +37,10 @@ resource "proxmox_virtual_environment_file" "ansible_controller_cloud_config" {
           Acquire::https::Timeout "60";
         permissions: '0644'
     runcmd:
+      - growpart /dev/vda 3
+      - pvresize /dev/vda3
+      - lvextend -l +100%FREE /dev/ubuntu-vg/ubuntu-lv
+      - resize2fs /dev/ubuntu-vg/ubuntu-lv
       - sleep ${count.index * 60}
       - apt-get update -y
       - apt-get upgrade -y
@@ -84,6 +88,10 @@ resource "proxmox_virtual_environment_file" "control_vm_cloud_config" {
           Acquire::https::Timeout "60";
         permissions: '0644'
     runcmd:
+      - growpart /dev/vda 3
+      - pvresize /dev/vda3
+      - lvextend -l +100%FREE /dev/ubuntu-vg/ubuntu-lv
+      - resize2fs /dev/ubuntu-vg/ubuntu-lv
       - echo "done" > /tmp/cloud-config.done
     EOF
 
@@ -126,6 +134,10 @@ resource "proxmox_virtual_environment_file" "node_vm_cloud_config" {
           Acquire::https::Timeout "60";
         permissions: '0644'
     runcmd:
+      - growpart /dev/vda 3
+      - pvresize /dev/vda3
+      - lvextend -l +100%FREE /dev/ubuntu-vg/ubuntu-lv
+      - resize2fs /dev/ubuntu-vg/ubuntu-lv
       - echo "done" > /tmp/cloud-config.done
     EOF
 

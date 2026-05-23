@@ -1,0 +1,18 @@
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: lab-{{ Net.name }}
+  namespace: {{ Lab.Namespace }}
+  labels:
+    app: lab
+    lab.trainee: {{ Trainee.Name }}
+spec:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "name": "lab-{{ Net.name }}",
+      "type": "cnv-bridge",
+      "bridge": "{{ Net.bridge }}",
+      "vlan": {{ Net.vlan }},
+      "ipam": {}
+    }

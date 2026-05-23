@@ -20,7 +20,7 @@ spec:
     {
       "cniVersion": "0.3.1",
       "name": "{{ $net.name }}",
-      "type": "bridge",
+      "type": "cnv-bridge",
       "bridge": "{{ $net.bridge }}",
       "ipam": {}
     }
