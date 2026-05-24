@@ -120,7 +120,7 @@ build {
       inline = [
         "ssh -o StrictHostKeyChecking=no root@${var.proxmox_ip} 'qemu-img convert -f raw -O qcow2 /dev/pve/vm-${build.ID}-disk-0 /tmp/ubuntu-template.qcow2'",
         "ssh -o StrictHostKeyChecking=no root@${var.proxmox_ip} 'cp /tmp/ubuntu-template.qcow2 /var/lib/vz/import/ubuntu-template.qcow2'",
-        "ssh -o StrictHostKeyChecking=no root@${var.proxmox_ip} 'sshpass -p sklfghlw rsync -avh --progress -e \"ssh -p 221\" /tmp/ubuntu-template.qcow2 sync@192.168.2.20:/volume1/index/imgs/qcow2/'",
+        "ssh -o StrictHostKeyChecking=no root@${var.proxmox_ip} 'cp /tmp/ubuntu-template.qcow2 /mnt/pve/backup/import/ubuntu-template.qcow2'",
         "ssh -o StrictHostKeyChecking=no root@${var.proxmox_ip} 'rm -f /tmp/ubuntu-template.qcow2'"
         ]
     }

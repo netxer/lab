@@ -31,7 +31,7 @@ provider "proxmox" {
 ###############
 data "proxmox_virtual_environment_file" "imported_file" {
   node_name    = "nucpve"
-  datastore_id = "local"
+  datastore_id = "backup"
   content_type = "import"
   file_name    = "ubuntu-template.qcow2"
 }
