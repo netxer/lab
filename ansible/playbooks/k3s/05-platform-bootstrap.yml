@@ -1,6 +1,6 @@
 ---
 # Bootstraps the KubeVirt platform on the K3s cluster.
-# Deploys HCO (KubeVirt, CDI, CNAO) + kubernetes-nmstate + NNCP bridges + NFD rules.
+# Deploys HCO (KubeVirt, CDI, CNAO) + kubernetes-nmstate + NFD.
 # Run from the control node (needs kubectl access).
 # Usage: ansible-playbook -i ../inv/ansible_inventory.ini 05-platform-bootstrap.yml
 #
@@ -9,17 +9,46 @@
 #   - Missing HCO CRDs (migration-operator, inflightoperations) applied explicitly
 #   - kubevirt-cluster-critical PriorityClass created before operators start
 #   - kubernetes-nmstate installed separately (not bundled in HCO)
-- name: Bootstrap KubeVirt platform (HCO + NMState + NNCP + NFD)
+- name: Bootstrap KubeVirt platform (HCO + NMState + NFD)
   hosts: control[0]
   become: no
   vars:
-    kubeconfig: "{{ kubeconfig | default('/etc/rancher/k3s/k3s.yaml') }}"
-    kubevirt_namespace: "{{ kubevirt_namespace | default('kubevirt-hyperconverged') }}"
-  environment:
-    KUBECONFIG: "{{ kubeconfig }}"
+    kubeconfig_candidates:
+      - /home/ubuntu/.kube/config
+      - /etc/rancher/k3s/k3s.yaml
+    default_kubevirt_namespace: kubevirt-hyperconverged
+    kubevirt_namespace: "{{ kubevirt_namespace_override | default(default_kubevirt_namespace) }}"
   tasks:
+    - name: Check candidate kubeconfig paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ kubeconfig_candidates }}"
+      register: kubeconfig_stats
+
+    - name: Select usable kubeconfig path
+      ansible.builtin.set_fact:
+        kubeconfig_path: >-
+          {{ (kubeconfig_stats.results
+              | selectattr('stat.exists')
+              | selectattr('stat.readable')
+              | map(attribute='item')
+              | first) | default('') }}
+
+    - name: Fail when no kubeconfig is available
+      ansible.builtin.fail:
+        msg: >-
+          No readable kubeconfig found on {{ inventory_hostname }}.
+          Checked: {{ kubeconfig_candidates | join(', ') }}
+      when: kubeconfig_path == ''
+
+    - name: Set kubeconfig environment
+      ansible.builtin.set_fact:
+        kubeconfig_env:
+          KUBECONFIG: "{{ kubeconfig_path }}"
+
     - name: Check kubectl connectivity
       ansible.builtin.command: kubectl get nodes
+      environment: "{{ kubeconfig_env }}"
       register: kubectl_check
       changed_when: false
       failed_when: kubectl_check.rc != 0
@@ -33,6 +62,7 @@
         kubectl create namespace {{ kubevirt_namespace }} --dry-run=client -o yaml | kubectl apply -f -
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       changed_when: false
 
     - name: Create kubevirt-cluster-critical PriorityClass (required before any KubeVirt operator starts)
@@ -48,11 +78,13 @@
         EOF
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       register: pc_apply
       changed_when: "'created' in pc_apply.stdout or 'configured' in pc_apply.stdout"
 
     - name: Check if HCO operator is already deployed
       ansible.builtin.command: kubectl get deployment hyperconverged-cluster-operator -n {{ kubevirt_namespace }}
+      environment: "{{ kubeconfig_env }}"
       register: hco_exists
       changed_when: false
       failed_when: false
@@ -79,7 +111,7 @@
       register: hco_apply
       changed_when: "'created' in hco_apply.stdout"
       environment:
-        KUBECONFIG: "{{ kubeconfig }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
         IS_OPENSHIFT: "false"
       when: hco_exists.rc != 0
 
@@ -91,6 +123,7 @@
         done
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       register: extra_crds
       changed_when: "'created' in extra_crds.stdout"
       when: hco_exists.rc != 0
@@ -103,6 +136,7 @@
           -n {{ kubevirt_namespace }}
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       register: hco_op_ready
       changed_when: false
 
@@ -118,6 +152,7 @@
         EOF
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       register: hco_cr
       changed_when: "'configured' in hco_cr.stdout or 'created' in hco_cr.stdout"
 
@@ -127,6 +162,7 @@
         --for=condition=Available
         --timeout=900s
         -n {{ kubevirt_namespace }}
+      environment: "{{ kubeconfig_env }}"
       register: hco_ready
       changed_when: false
 
@@ -145,6 +181,7 @@
         kubectl apply -f ${BASE}/nmstate.io_v1_nmstate_cr.yaml
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       register: nmstate_install
       changed_when: "'created' in nmstate_install.stdout"
 
@@ -156,27 +193,8 @@
           -n nmstate
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       register: nmstate_ready
-      changed_when: false
-
-    - name: Copy NNCP manifest to control node
-      ansible.builtin.copy:
-        src: files/02-bridges.nncp.yaml
-        dest: /tmp/02-bridges.nncp.yaml
-        mode: '0644'
-
-    - name: Apply VLAN-aware bridge NNCP
-      ansible.builtin.command: kubectl apply -f /tmp/02-bridges.nncp.yaml
-      register: nncp_apply
-      changed_when: "'configured' in nncp_apply.stdout or 'created' in nncp_apply.stdout"
-
-    - name: Check NNCP availability (non-blocking — requires NetworkManager on nodes)
-      ansible.builtin.shell: |
-        state=$(kubectl get nncp lab-bridges -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
-        [ "$state" = "True" ] && echo "Available" || echo "Pending (install network-manager on nodes to activate)"
-      args:
-        executable: /bin/bash
-      register: nncp_wait
       changed_when: false
 
     - name: Install Node Feature Discovery via kustomize
@@ -188,6 +206,7 @@
           https://github.com/kubernetes-sigs/node-feature-discovery/deployment/overlays/default?ref=${VERSION}
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       register: nfd_install
       changed_when: "'created' in nfd_install.stdout"
 
@@ -199,21 +218,12 @@
           -n node-feature-discovery 2>/dev/null || true
       args:
         executable: /bin/bash
+      environment: "{{ kubeconfig_env }}"
       changed_when: false
-
-    - name: Copy NFD rule manifest to control node
-      ansible.builtin.copy:
-        src: files/03-nfd-rules.yaml
-        dest: /tmp/03-nfd-rules.yaml
-        mode: '0644'
-
-    - name: Apply NodeFeatureRule for KVM-capable nodes
-      ansible.builtin.command: kubectl apply --server-side --force-conflicts -f /tmp/03-nfd-rules.yaml
-      register: nfd_apply
-      changed_when: "'configured' in nfd_apply.stdout or 'created' in nfd_apply.stdout"
 
     - name: Show lab-node labels
       ansible.builtin.command: kubectl get nodes -L lab-node
+      environment: "{{ kubeconfig_env }}"
       register: node_labels
       changed_when: false
 
@@ -222,6 +232,4 @@
         msg:
           - "HCO:    {{ hco_ready.stdout }}"
           - "NMState: {{ 'ready' if nmstate_ready.rc == 0 else 'not ready' }}"
-          - "NNCP:   {{ nncp_wait.stdout }}"
-          - "NFD:    {{ nfd_apply.stdout if nfd_apply.changed else 'unchanged' }}"
           - "Nodes:  {{ node_labels.stdout_lines }}"
